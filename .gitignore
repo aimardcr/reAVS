@@ -37,6 +37,7 @@ report.json
 report.md
 *.apk
 *.aab
+!tests/reporting/golden/report.json
 
 # OS
 .DS_Store

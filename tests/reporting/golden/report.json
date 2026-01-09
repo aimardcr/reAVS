@@ -1,0 +1,110 @@
+﻿{
+  "attack_surface": {
+    "activities": [
+      {
+        "authority": null,
+        "exported": true,
+        "intent_filters": [],
+        "name": "com.test.MainActivity",
+        "notes": null,
+        "permission": null,
+        "type": "activity"
+      }
+    ],
+    "providers": [
+      {
+        "authority": "com.test.provider",
+        "exported": false,
+        "intent_filters": [],
+        "name": "com.test.Provider",
+        "notes": null,
+        "permission": null,
+        "type": "provider"
+      }
+    ],
+    "receivers": [],
+    "services": []
+  },
+  "findings": [
+    {
+      "component_desc": "com.test.MainActivity",
+      "component_exported": true,
+      "component_name": "com.test.MainActivity",
+      "confidence": "HIGH",
+      "confidence_basis": "DATAFLOW",
+      "description": "DexClassLoader used with attacker-controlled path.",
+      "entrypoint_method": "com.test.MainActivity->onCreate",
+      "evidence": [
+        {
+          "description": "Path from Intent",
+          "kind": "SOURCE",
+          "method": "com.test.MainActivity->onCreate",
+          "notes": null
+        },
+        {
+          "description": "DexClassLoader invoked",
+          "kind": "SINK",
+          "method": "com.test.MainActivity->onCreate",
+          "notes": "DexClassLoader"
+        }
+      ],
+      "fingerprint": "DYNAMIC_CODE_LOADING|com.test.MainActivity->onCreate|com.test.MainActivity",
+      "id": "DYNAMIC_CODE_LOADING",
+      "primary_method": "com.test.MainActivity->onCreate",
+      "recommendation": "Avoid dynamic loading.",
+      "references": [
+        "CWE-829"
+      ],
+      "related_methods": [],
+      "severity": "CRITICAL",
+      "severity_basis": "CODE_EXECUTION",
+      "sink_method": "com.test.MainActivity->onCreate",
+      "title": "Dynamic code loading"
+    },
+    {
+      "class_name": "com.test.CryptoUtil",
+      "component_name": null,
+      "confidence": "HIGH",
+      "confidence_basis": "SIGNATURE",
+      "description": "Cipher uses ECB mode.",
+      "entrypoint_method": "com.test.CryptoUtil->encrypt",
+      "evidence": [
+        {
+          "description": "Cipher.getInstance with ECB",
+          "kind": "SINK",
+          "method": "com.test.CryptoUtil->encrypt",
+          "notes": "AES/ECB"
+        }
+      ],
+      "fingerprint": "AES_ECB_MODE|com.test.CryptoUtil->encrypt|",
+      "id": "AES_ECB_MODE",
+      "primary_method": "com.test.CryptoUtil->encrypt",
+      "recommendation": "Use AES/GCM.",
+      "related_methods": [],
+      "severity": "MEDIUM",
+      "severity_basis": "CRYPTOGRAPHIC_WEAKNESS",
+      "sink_method": "com.test.CryptoUtil->encrypt",
+      "title": "Insecure AES/ECB mode"
+    }
+  ],
+  "schema_version": "0.2.0",
+  "summary": {
+    "exported_components": 1,
+    "findings_by_severity": {
+      "CRITICAL": 1,
+      "HIGH": 0,
+      "INFO": 0,
+      "LOW": 0,
+      "MEDIUM": 1
+    },
+    "non_exported_components": 1,
+    "total_components": 2
+  },
+  "tool": {
+    "androguard_version": "test",
+    "name": "AVS",
+    "scan_mode": "fast",
+    "timestamp": "2026-01-01T00:00:00+00:00",
+    "version": "0.1.0"
+  }
+}
