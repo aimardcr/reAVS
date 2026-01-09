@@ -7,7 +7,7 @@ from core.ir import Finding, EvidenceStep, Severity, Confidence
 from core.bc_extract import extract_method, InvokeRef
 from core.util.strings import is_base64ish, is_hexish
 from core.util.smali_like import find_snippet
-from core.dataflow.queries import all_methods
+from core.dataflow.dex_queries import all_methods
 from scanners.base import BaseScanner
 
 

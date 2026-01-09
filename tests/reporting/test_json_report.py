@@ -6,7 +6,7 @@ from pathlib import Path
 
 from core.ir import Component, Finding, EvidenceStep, Severity, Confidence
 from core.reporting import json_report
-from core.dataflow.catalog import load_rules
+from core.dataflow.rules_catalog import load_rules
 
 
 def test_json_report_matches_golden():

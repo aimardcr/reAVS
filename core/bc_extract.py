@@ -154,14 +154,15 @@ def get_invoke_refs(method) -> List[InvokeRef]:
     if not code:
         return invokes
     bc = code.get_bc()
+    offsets = _instruction_offsets(bc)
     last_invoke: Optional[InvokeRef] = None
-    offset = 0
-    for ins in bc.get_instructions():
+    for idx, ins in enumerate(bc.get_instructions()):
         opcode = ins.get_name()
         try:
             raw = str(ins.get_output())
         except Exception:
             raw = ""
+        offset = offsets[idx]
         if opcode.startswith("invoke-"):
             cls, name, desc, regs = _parse_invoke_output(raw)
             invoke = InvokeRef(
@@ -187,7 +188,6 @@ def get_invoke_refs(method) -> List[InvokeRef]:
             last_invoke = None
         else:
             last_invoke = None
-        offset += 1
     return invokes
 
 
@@ -199,8 +199,8 @@ def get_const_strings(method) -> List[ConstStringRef]:
     if not code:
         return strings
     bc = code.get_bc()
-    offset = 0
-    for ins in bc.get_instructions():
+    offsets = _instruction_offsets(bc)
+    for idx, ins in enumerate(bc.get_instructions()):
         opcode = ins.get_name()
         if opcode in ("const-string", "const-string/jumbo"):
             try:
@@ -213,8 +213,7 @@ def get_const_strings(method) -> List[ConstStringRef]:
             except Exception:
                 value = ""
             if regs:
-                strings.append(ConstStringRef(offset=offset, dest_reg=regs[0], value=value, raw=raw))
-        offset += 1
+                strings.append(ConstStringRef(offset=offsets[idx], dest_reg=regs[0], value=value, raw=raw))
     return strings
 
 
@@ -239,8 +238,8 @@ def get_const_ints(method) -> List[ConstIntRef]:
     if not code:
         return ints
     bc = code.get_bc()
-    offset = 0
-    for ins in bc.get_instructions():
+    offsets = _instruction_offsets(bc)
+    for idx, ins in enumerate(bc.get_instructions()):
         opcode = ins.get_name()
         if opcode in ("const/4", "const/16", "const", "const/high16"):
             try:
@@ -250,8 +249,7 @@ def get_const_ints(method) -> List[ConstIntRef]:
             regs = _parse_regs(raw)
             value = _parse_const_int(raw)
             if regs and value is not None:
-                ints.append(ConstIntRef(offset=offset, dest_reg=regs[0], value=value, raw=raw))
-        offset += 1
+                ints.append(ConstIntRef(offset=offsets[idx], dest_reg=regs[0], value=value, raw=raw))
     return ints
 
 
@@ -263,8 +261,8 @@ def get_new_instances(method) -> List[NewInstanceRef]:
     if not code:
         return instances
     bc = code.get_bc()
-    offset = 0
-    for ins in bc.get_instructions():
+    offsets = _instruction_offsets(bc)
+    for idx, ins in enumerate(bc.get_instructions()):
         if ins.get_name() == "new-instance":
             try:
                 raw = str(ins.get_output())
@@ -277,13 +275,12 @@ def get_new_instances(method) -> List[NewInstanceRef]:
             if regs:
                 instances.append(
                     NewInstanceRef(
-                        offset=offset,
+                        offset=offsets[idx],
                         dest_reg=regs[0],
                         class_desc=normalize_class_desc(cls),
                         raw=raw,
                     )
                 )
-        offset += 1
     return instances
 
 
@@ -295,8 +292,8 @@ def get_field_refs(method) -> List[FieldRef]:
     if not code:
         return refs
     bc = code.get_bc()
-    offset = 0
-    for ins in bc.get_instructions():
+    offsets = _instruction_offsets(bc)
+    for idx, ins in enumerate(bc.get_instructions()):
         opcode = ins.get_name()
         if opcode.startswith(("sget", "sput", "iget", "iput")):
             try:
@@ -337,7 +334,7 @@ def get_field_refs(method) -> List[FieldRef]:
             if owner and field and desc:
                 refs.append(
                     FieldRef(
-                        offset=offset,
+                        offset=offsets[idx],
                         opcode=opcode,
                         owner_class=normalize_class_desc(owner),
                         field_name=field,
@@ -348,7 +345,6 @@ def get_field_refs(method) -> List[FieldRef]:
                         raw=raw,
                     )
                 )
-        offset += 1
     return refs
 
 
@@ -360,8 +356,8 @@ def get_moves(method) -> List[MoveRef]:
     if not code:
         return moves
     bc = code.get_bc()
-    offset = 0
-    for ins in bc.get_instructions():
+    offsets = _instruction_offsets(bc)
+    for idx, ins in enumerate(bc.get_instructions()):
         opcode = ins.get_name()
         if opcode.startswith("move"):
             try:
@@ -371,9 +367,60 @@ def get_moves(method) -> List[MoveRef]:
             regs = _parse_regs(raw)
             dest = regs[0] if len(regs) >= 1 else None
             src = regs[1] if len(regs) >= 2 else None
-            moves.append(MoveRef(offset=offset, opcode=opcode, dest_reg=dest, src_reg=src, raw=raw))
-        offset += 1
+            moves.append(MoveRef(offset=offsets[idx], opcode=opcode, dest_reg=dest, src_reg=src, raw=raw))
     return moves
+
+
+def _instruction_offsets(bc) -> List[int]:
+    ins_list = list(bc.get_instructions())
+    offsets: List[int] = []
+    have_addr = False
+    for ins in ins_list:
+        addr = _ins_addr(ins)
+        if addr is not None:
+            offsets.append(addr)
+            have_addr = True
+        else:
+            offsets.append(0)
+    if have_addr:
+        return offsets
+    current = 0
+    out: List[int] = []
+    for ins in ins_list:
+        out.append(current)
+        length = _ins_length(ins)
+        current += length if length is not None else 1
+    return out
+
+
+def _ins_addr(ins) -> Optional[int]:
+    for name in ("get_start_addr", "get_start", "get_pos", "get_offset"):
+        if hasattr(ins, name):
+            try:
+                value = getattr(ins, name)()
+            except Exception:
+                try:
+                    value = getattr(ins, name)
+                except Exception:
+                    continue
+            if isinstance(value, int):
+                return value
+    return None
+
+
+def _ins_length(ins) -> Optional[int]:
+    for name in ("get_length", "get_size", "get_insn_length"):
+        if hasattr(ins, name):
+            try:
+                value = getattr(ins, name)()
+            except Exception:
+                try:
+                    value = getattr(ins, name)
+                except Exception:
+                    continue
+            if isinstance(value, int):
+                return value
+    return None
 
 
 def extract_method(method) -> ExtractedMethod:

@@ -5,8 +5,9 @@ from typing import List
 from core.context import ScanContext
 from core.ir import Finding, EvidenceStep, Severity, Confidence
 from core.bc_extract import extract_method, InvokeRef
-from core.dataflow.local_taint import analyze_method_local_taint, TaintTag
-from core.dataflow.queries import methods_for_class, build_method_index
+from core.dataflow.taint_linear import TaintTag
+from core.dataflow.taint_provider import MethodTaintView
+from core.dataflow.dex_queries import methods_for_class, build_method_index
 from core.util.smali_like import find_snippet
 from core.util.rules import match_invocation, rule_index, rule_list
 from scanners.base import BaseScanner
@@ -39,23 +40,25 @@ class CodeExecutionScanner(BaseScanner):
                     continue
                 analyzed += 1
                 extracted = extract_method(m)
-                taint = analyze_method_local_taint(m, extracted, ctx.rules)
+                taint_view = _taint_view(ctx, m, extracted)
+                taint_by_offset = taint_view.reg_taint_by_offset
 
                 for inv in extracted.invokes:
+                    taint_at = taint_by_offset.get(inv.offset, {})
                     if match_invocation(inv, dex_patterns):
-                        tainted = _has_tainted_arg(inv, taint, {TaintTag.INTENT, TaintTag.URI})
+                        tainted = _has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI})
                         sev, conf = _normalize_exec_scoring(tainted)
-                        finding = _finding_dex_loader(comp, m, inv, sev, conf, tainted, taint.reg_taint)
+                        finding = _finding_dex_loader(comp, m, inv, sev, conf, tainted)
                         findings.append(finding)
                         ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
                     if match_invocation(inv, exec_patterns):
-                        tainted = _has_tainted_arg(inv, taint, {TaintTag.INTENT, TaintTag.URI})
+                        tainted = _has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI})
                         sev, conf = _normalize_exec_scoring(tainted)
                         finding = _finding_runtime_exec(comp, m, inv, sev, conf, tainted)
                         findings.append(finding)
                         ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
                     if match_invocation(inv, reflection_patterns):
-                        tainted = _has_tainted_arg(inv, taint, {TaintTag.INTENT, TaintTag.URI})
+                        tainted = _has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI})
                         sev, conf = _normalize_exec_scoring(tainted)
                         finding = _finding_reflection(comp, m, inv, sev, conf, tainted)
                         findings.append(finding)
@@ -95,9 +98,9 @@ def _normalize_class_name(ctx: ScanContext, name: str) -> str:
     return name.replace(".", "/")
 
 
-def _has_tainted_arg(inv: InvokeRef, taint, tags) -> bool:
+def _has_tainted_arg(inv: InvokeRef, reg_taint, tags) -> bool:
     for reg in inv.arg_regs:
-        if reg in taint.reg_taint and taint.reg_taint[reg] & tags:
+        if reg in reg_taint and reg_taint[reg] & tags:
             return True
     return False
 
@@ -113,7 +116,6 @@ def _finding_dex_loader(
     severity: Severity,
     confidence: Confidence,
     tainted: bool,
-    reg_taint,
 ) -> Finding:
     snippet = find_snippet(method, ["DexClassLoader", "PathClassLoader"]) or inv.raw
     desc = "DexClassLoader/PathClassLoader used with potentially attacker-controlled path."
@@ -258,3 +260,9 @@ def _normalize_exec_scoring(tainted: bool) -> tuple[Severity, Confidence]:
     if tainted:
         return Severity.CRITICAL, Confidence.HIGH
     return Severity.HIGH, Confidence.MEDIUM
+
+
+def _taint_view(ctx: ScanContext, method, extracted) -> MethodTaintView:
+    if ctx.taint_provider is None:
+        return MethodTaintView(reg_taint_by_offset={})
+    return ctx.taint_provider.taint_by_offset(method, extracted)

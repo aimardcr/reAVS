@@ -5,8 +5,9 @@ from typing import List, Dict, Set
 from core.context import ScanContext
 from core.ir import Finding, EvidenceStep, Severity, Confidence
 from core.bc_extract import extract_method, InvokeRef
-from core.dataflow.local_taint import analyze_method_local_taint, TaintTag
-from core.dataflow.queries import methods_for_class, build_method_index
+from core.dataflow.taint_linear import TaintTag
+from core.dataflow.taint_provider import MethodTaintView
+from core.dataflow.dex_queries import methods_for_class, build_method_index
 from core.util.smali_like import find_snippet
 from core.util.rules import match_invocation, rule_index, rule_list
 from scanners.base import BaseScanner
@@ -44,25 +45,27 @@ class IntentInjectionScanner(BaseScanner):
                     continue
                 analyzed += 1
                 extracted = extract_method(m)
-                taint = analyze_method_local_taint(m, extracted, ctx.rules)
+                taint_view = _taint_view(ctx, m, extracted)
+                taint_by_offset = taint_view.reg_taint_by_offset
 
-                mutator_notes = _intent_mutator_notes(extracted.invokes, taint.reg_taint)
+                mutator_notes = _intent_mutator_notes(extracted.invokes, taint_by_offset)
                 for inv in extracted.invokes:
-                    if _is_intent_forward(inv, forward_patterns) and _has_tainted_arg(inv, taint, {TaintTag.INTENT}):
+                    taint_at = taint_by_offset.get(inv.offset, {})
+                    if _is_intent_forward(inv, forward_patterns) and _has_tainted_arg(inv, taint_at, {TaintTag.INTENT}):
                         finding = _finding_intent_forward(comp, m, inv, extracted.invokes, forward_patterns)
                         findings.append(finding)
                         _log_match(ctx, finding, m)
-                    if _is_set_result(inv, set_result_patterns) and _has_tainted_arg(inv, taint, {TaintTag.INTENT}):
-                        if not _has_tainted_result_intent(inv, taint.reg_taint, mutator_notes):
+                    if _is_set_result(inv, set_result_patterns) and _has_tainted_arg(inv, taint_at, {TaintTag.INTENT}):
+                        if not _has_tainted_result_intent(inv, taint_at, mutator_notes):
                             continue
                         finding = _finding_set_result(comp, m, inv, mutator_notes)
                         findings.append(finding)
                         _log_match(ctx, finding, m)
-                    if _is_file_write(inv, file_write_patterns) and _has_tainted_arg(inv, taint, {TaintTag.INTENT, TaintTag.URI}):
+                    if _is_file_write(inv, file_write_patterns) and _has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI}):
                         finding = _finding_arbitrary_write(comp, m, inv)
                         findings.append(finding)
                         _log_match(ctx, finding, m)
-                    if _is_webview_load(inv, webview_patterns) and _has_tainted_arg(inv, taint, {TaintTag.INTENT, TaintTag.URI, TaintTag.URL}):
+                    if _is_webview_load(inv, webview_patterns) and _has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI, TaintTag.URL}):
                         js_enabled = _has_js_enabled(extracted.invokes)
                         finding = _finding_webview_url(comp, m, inv, js_enabled)
                         findings.append(finding)
@@ -79,7 +82,7 @@ class IntentInjectionScanner(BaseScanner):
                         comp,
                         m,
                         extracted.invokes,
-                        taint.reg_taint,
+                        taint_view,
                         method_index,
                         max_depth=ctx.config.max_depth,
                         forward_patterns=forward_patterns,
@@ -128,9 +131,9 @@ def _get_target_sdk(ctx: ScanContext) -> int:
         return 0
 
 
-def _has_tainted_arg(inv: InvokeRef, taint, tags: Set[TaintTag]) -> bool:
+def _has_tainted_arg(inv: InvokeRef, reg_taint: Dict[int, Set[TaintTag]], tags: Set[TaintTag]) -> bool:
     for reg in inv.arg_regs:
-        if reg in taint.reg_taint and taint.reg_taint[reg] & tags:
+        if reg in reg_taint and reg_taint[reg] & tags:
             return True
     return False
 
@@ -202,7 +205,7 @@ def _helper_propagation_findings(
     comp,
     caller,
     invokes: List[InvokeRef],
-    reg_taint: Dict[int, Set[TaintTag]],
+    taint_view: MethodTaintView,
     method_index: dict,
     max_depth: int,
     forward_patterns: List[str],
@@ -212,11 +215,11 @@ def _helper_propagation_findings(
 ) -> List[Finding]:
     findings: List[Finding] = []
     caller_class = caller.get_class_name()
-    queue = [(caller, invokes, reg_taint, 0)]
+    queue = [(caller, invokes, 0)]
     visited = set()
 
     while queue:
-        current_method, current_invokes, current_taint, depth = queue.pop(0)
+        current_method, current_invokes, depth = queue.pop(0)
         if depth >= max_depth:
             continue
         for inv in current_invokes:
@@ -226,7 +229,8 @@ def _helper_propagation_findings(
                 continue
             if not inv.opcode.startswith("invoke-direct") and not inv.opcode.startswith("invoke-static"):
                 continue
-            if not _has_tainted_arg(inv, _wrap_taint(current_taint), {TaintTag.INTENT, TaintTag.URI, TaintTag.URL}):
+            taint_at = taint_view.taint_at(inv.offset)
+            if not _has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI, TaintTag.URL}):
                 continue
             key = (inv.target_class, inv.target_name, inv.target_desc)
             if key in visited:
@@ -249,15 +253,8 @@ def _helper_propagation_findings(
                     webview_patterns,
                 )
             )
-            queue.append((callee, callee_extracted.invokes, current_taint, depth + 1))
+            queue.append((callee, callee_extracted.invokes, depth + 1))
     return findings
-
-
-def _wrap_taint(reg_taint: Dict[int, Set[TaintTag]]):
-    class Dummy:
-        def __init__(self, reg_taint):
-            self.reg_taint = reg_taint
-    return Dummy(reg_taint)
 
 
 def _helper_sink_findings(
@@ -523,7 +520,15 @@ def _log_match(ctx: ScanContext, finding: Finding, method) -> None:
     ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(method)}")
 
 
-def _intent_mutator_notes(invokes: List[InvokeRef], reg_taint: Dict[int, Set[TaintTag]]) -> Dict[int, List[str]]:
+def _taint_view(ctx: ScanContext, method, extracted) -> MethodTaintView:
+    if ctx.taint_provider is None:
+        return MethodTaintView(reg_taint_by_offset={})
+    return ctx.taint_provider.taint_by_offset(method, extracted)
+
+
+
+
+def _intent_mutator_notes(invokes: List[InvokeRef], taint_by_offset: Dict[int, Dict[int, Set[TaintTag]]]) -> Dict[int, List[str]]:
     notes: Dict[int, List[str]] = {}
     mutators = {
         "setAction",
@@ -541,16 +546,17 @@ def _intent_mutator_notes(invokes: List[InvokeRef], reg_taint: Dict[int, Set[Tai
         if len(inv.arg_regs) < 2:
             continue
         receiver = inv.arg_regs[0]
-        if any(reg in reg_taint for reg in inv.arg_regs[1:]):
+        taint_at = taint_by_offset.get(inv.offset, {})
+        if any(reg in taint_at for reg in inv.arg_regs[1:]):
             notes.setdefault(receiver, []).append(inv.raw)
     return notes
 
 
-def _has_tainted_result_intent(inv: InvokeRef, reg_taint: Dict[int, Set[TaintTag]], mutator_notes: Dict[int, List[str]]) -> bool:
+def _has_tainted_result_intent(inv: InvokeRef, taint_at: Dict[int, Set[TaintTag]], mutator_notes: Dict[int, List[str]]) -> bool:
     if len(inv.arg_regs) < 2:
         return False
     for reg in inv.arg_regs[1:]:
-        if reg in reg_taint and reg_taint[reg]:
+        if reg in taint_at and taint_at[reg]:
             if reg in mutator_notes:
                 return True
     return False

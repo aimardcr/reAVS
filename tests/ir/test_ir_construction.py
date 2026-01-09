@@ -1,9 +1,9 @@
 ﻿from __future__ import annotations
 
 from core.bc_extract import extract_method, build_one_hop_call_edges
-from core.dataflow.local_taint import analyze_method_local_taint, TaintTag
-from core.dataflow.catalog import load_rules
-from core.dataflow.queries import build_method_index
+from core.dataflow.taint_linear import analyze_method_local_taint, TaintTag
+from core.dataflow.rules_catalog import load_rules
+from core.dataflow.dex_queries import build_method_index
 from tests.helpers.fakes import (
     FakeMethod,
     FakeAnalysis,

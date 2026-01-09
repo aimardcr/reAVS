@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional, List
 
+from core.dataflow.taint_provider import BaseTaintProvider
+
 from core.ir import Component
 from core.logging import Logger
 
@@ -26,4 +28,5 @@ class ScanContext:
     rules: dict
     androguard_version: str
     logger: Logger
+    taint_provider: Optional[BaseTaintProvider] = None
     metrics: dict = field(default_factory=dict)

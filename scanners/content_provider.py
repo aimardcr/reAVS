@@ -5,8 +5,9 @@ from typing import List
 from core.context import ScanContext
 from core.ir import Finding, EvidenceStep, Severity, Confidence
 from core.bc_extract import extract_method, InvokeRef
-from core.dataflow.local_taint import analyze_method_local_taint, TaintTag
-from core.dataflow.queries import methods_for_class
+from core.dataflow.taint_linear import TaintTag
+from core.dataflow.taint_provider import MethodTaintView
+from core.dataflow.dex_queries import methods_for_class
 from core.util.smali_like import find_snippet
 from core.util.rules import match_invocation, rule_index, rule_list
 from scanners.base import BaseScanner
@@ -41,15 +42,17 @@ class ContentProviderScanner(BaseScanner):
                     continue
                 analyzed += 1
                 extracted = extract_method(m)
-                taint = analyze_method_local_taint(m, extracted, ctx.rules)
+                taint_view = _taint_view(ctx, m, extracted)
+                taint_by_offset = taint_view.reg_taint_by_offset
                 weak_traversal = any(".." in c.value for c in extracted.const_strings)
                 has_canonical = _has_canonicalization(extracted.invokes, canonical_patterns)
                 for inv in extracted.invokes:
-                    if _is_sql_sink(inv, sql_patterns) and _has_tainted_arg(inv, taint, {TaintTag.URI, TaintTag.INTENT}):
+                    taint_at = taint_by_offset.get(inv.offset, {})
+                    if _is_sql_sink(inv, sql_patterns) and _has_tainted_arg(inv, taint_at, {TaintTag.URI, TaintTag.INTENT}):
                         finding = _finding_sql_injection(comp, m, inv)
                         findings.append(finding)
                         ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
-                    if _is_file_open(inv, file_read_patterns, file_write_patterns) and _has_tainted_arg(inv, taint, {TaintTag.URI, TaintTag.INTENT}):
+                    if _is_file_open(inv, file_read_patterns, file_write_patterns) and _has_tainted_arg(inv, taint_at, {TaintTag.URI, TaintTag.INTENT}):
                         finding = _finding_arbitrary_file(comp, m, inv, extracted, weak_traversal, has_canonical)
                         findings.append(finding)
                         ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
@@ -88,11 +91,17 @@ def _normalize_class_name(ctx: ScanContext, name: str) -> str:
     return name.replace(".", "/")
 
 
-def _has_tainted_arg(inv: InvokeRef, taint, tags) -> bool:
+def _has_tainted_arg(inv: InvokeRef, reg_taint, tags) -> bool:
     for reg in inv.arg_regs:
-        if reg in taint.reg_taint and taint.reg_taint[reg] & tags:
+        if reg in reg_taint and reg_taint[reg] & tags:
             return True
     return False
+
+
+def _taint_view(ctx: ScanContext, method, extracted) -> MethodTaintView:
+    if ctx.taint_provider is None:
+        return MethodTaintView(reg_taint_by_offset={})
+    return ctx.taint_provider.taint_by_offset(method, extracted)
 
 
 def _is_sql_sink(inv: InvokeRef, patterns: List[str]) -> bool:

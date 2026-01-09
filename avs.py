@@ -20,7 +20,8 @@ from core.loader import load_apk
 from core.manifest import get_components
 from core.reporting.json_report import build_json_report, write_json_report, resolve_severity
 from core.util.strings import normalize_component_name, normalize_method_name
-from core.dataflow.catalog import load_rules
+from core.dataflow.rules_catalog import load_rules
+from core.dataflow.taint_provider import LinearTaintProvider, CfgTaintProvider
 from scanners.intent_injection import IntentInjectionScanner
 from scanners.content_provider import ContentProviderScanner
 from scanners.code_execution import CodeExecutionScanner
@@ -173,7 +174,13 @@ def main(argv: List[str]) -> int:
     components = get_components(apk)
     package_name = apk.get_package() or args.apk
 
-    max_depth = args.depth if args.deep else 0
+    if args.deep:
+        max_depth = args.depth
+    else:
+        max_depth = 0
+        if args.depth != 3:
+            logger.warn("depth ignored in fast mode; use --deep to enable helper propagation")
+    taint_provider = CfgTaintProvider(analysis, rules) if scan_mode == "deep" else LinearTaintProvider(rules)
     ctx = ScanContext(
         apk_path=args.apk,
         apk=apk,
@@ -189,6 +196,7 @@ def main(argv: List[str]) -> int:
         rules=rules,
         androguard_version=getattr(androguard, "__version__", "unknown"),
         logger=logger,
+        taint_provider=taint_provider,
     )
 
     scanners = [

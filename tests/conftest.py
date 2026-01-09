@@ -10,8 +10,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.context import ScanConfig, ScanContext
-from core.dataflow.catalog import load_rules
+from core.dataflow.rules_catalog import load_rules
 from core.logging import Logger
+from core.dataflow.taint_provider import LinearTaintProvider, CfgTaintProvider
 from tests.helpers.fakes import FakeAPK, FakeAnalysis
 
 
@@ -43,6 +44,7 @@ def make_ctx():
                 "sanitizers": "rules/sanitizers.yml",
                 "policy": "rules/policy.yml",
             })
+        taint_provider = CfgTaintProvider(analysis, ruleset) if scan_mode == "deep" or max_depth > 0 else LinearTaintProvider(ruleset)
         return ScanContext(
             apk_path="fake.apk",
             apk=apk_obj,
@@ -53,6 +55,7 @@ def make_ctx():
             rules=ruleset,
             androguard_version="test",
             logger=Logger(verbose=verbose),
+            taint_provider=taint_provider,
         )
 
     return _make_ctx
