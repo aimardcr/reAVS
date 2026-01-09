@@ -247,7 +247,7 @@ def _build_finding_entry(
     sink_method = normalize_method_name(sink_method)
     related_methods = _normalize_method_list(related_methods)
     normalized_evidence = _normalize_evidence_methods(evidence)
-    fingerprint = finding.fingerprint or _default_fingerprint(finding)
+    fingerprint = _normalize_fingerprint(finding.fingerprint or _default_fingerprint(finding))
     entry = {
         "id": finding.id,
         "title": finding.title,
@@ -282,7 +282,7 @@ def _normalize_component_fields(component_name: Optional[str]) -> Tuple[Optional
     if not component_name:
         return None, None
     normalized = normalize_component_name(component_name)
-    return normalized, fqcn_to_desc(normalized)
+    return normalized, normalized
 
 
 def _component_is_exported(component_name: Optional[str], exported_lookup: Dict[str, bool]) -> Optional[bool]:
@@ -362,6 +362,32 @@ def _default_fingerprint(finding: Finding) -> str:
     entrypoint = normalize_method_name(finding.entrypoint_method) or ""
     component = normalize_component_name(finding.component_name) or ""
     return f"{finding.id}|{entrypoint}|{component}"
+
+
+def _normalize_fingerprint(value: str) -> str:
+    parts = value.split("|")
+    if not parts:
+        return value
+    normalized = [parts[0]]
+    for part in parts[1:]:
+        normalized.append(_normalize_fingerprint_part(part))
+    return "|".join(normalized)
+
+
+def _normalize_fingerprint_part(value: str) -> str:
+    if not value:
+        return value
+    if "->" in value:
+        return normalize_method_name(value) or value
+    if _looks_desc(value):
+        return normalize_component_name(value) or value
+    return value
+
+
+def _looks_desc(value: str) -> bool:
+    if value.startswith("["):
+        return value.endswith(";") and "L" in value
+    return value.startswith("L") and value.endswith(";")
 
 
 def _owner_from_method(method_name: Optional[str]) -> Optional[str]:
