@@ -318,14 +318,14 @@ def _print_findings_table(findings) -> None:
         print("Findings: none")
         return
 
-    headers = ["SEV", "CONF", "ID", "COMPONENT", "ENTRYPOINT"]
+    headers = ["SEVERITY", "ID", "COMPONENT", "ENTRYPOINT"]
     rows = []
     for f in _sort_findings(findings):
         component = normalize_component_name(f.component_name) or "-"
         entrypoint = normalize_method_name(f.entrypoint_method) or "-"
-        rows.append([f.severity.value, f.confidence.value, f.id, component, entrypoint])
+        rows.append([f.severity.value, f.id, component, entrypoint])
 
-    max_widths = [8, 8, 32, 60, 80]
+    max_widths = [10, 32, 50, 64]
     widths = []
     for idx, header in enumerate(headers):
         max_len = max(len(header), max(len(r[idx]) for r in rows))
@@ -372,6 +372,30 @@ def _normalize_findings_severity(findings, components, policy) -> None:
         severity, severity_basis = resolve_severity(finding, exported, policy=policy)
         finding.severity = severity
         finding.severity_basis = severity_basis
+
+
+def _sink_method_from_finding(finding) -> str | None:
+    if finding.sink_method:
+        return finding.sink_method
+    for ev in finding.evidence:
+        if ev.kind == "SINK" and ev.method:
+            return ev.method
+    return None
+
+
+def _sink_label_from_finding(finding) -> str:
+    sink_method = _sink_method_from_finding(finding)
+    if sink_method:
+        return normalize_method_name(sink_method) or sink_method
+    for ev in finding.evidence:
+        if ev.kind == "SINK" and ev.notes:
+            return _compact_sink_note(ev.notes)
+    return "-"
+
+
+def _compact_sink_note(note: str) -> str:
+    compact = note.replace("\n", " ").strip()
+    return " ".join(compact.split())
 
 
 if __name__ == "__main__":
