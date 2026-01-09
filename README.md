@@ -26,7 +26,7 @@ python3 avs.py app.apk --out report.json --deep
 Options:
 - `--out` JSON report path (optional)
 - `--fast` (default) or `--deep`
-- `--depth <n>` helper propagation depth (deep mode, default: 3)
+- `--depth <n>` helper propagation depth (deep mode, default: 3; ignored in fast mode)
 - `--component <ComponentName>` focus a specific component
 - `--verbose`
 - Findings are printed to the console in a simple table by default.
@@ -41,8 +41,11 @@ Update `rules/sources.yml`, `rules/sinks.yml`, `rules/sanitizers.yml`, and `rule
 
 ## Developer Notes
 - `core/bc_extract.py` exposes method-scoped extraction (invokes, const strings, new instances, field refs, moves) and links move-result to invocations when possible.
-- `core/dataflow/local_taint.py` performs minimal intra-procedural taint tracking over registers. It marks taint from Intent/Uri sources and records call propagation facts for helper analysis.
-- Deep mode (`--deep --depth N`) performs bounded helper propagation within the same class to attribute sinks in helper methods to tainted inputs.
+- `core/dataflow/taint_linear.py` performs minimal intra-procedural taint tracking over registers (fast mode).
+- `core/dataflow/taint_cfg.py` builds CFG/ICFG taint summaries for interprocedural propagation (deep mode).
+- `core/dataflow/taint_provider.py` selects the taint engine by scan mode.
+- Fast mode (`--fast`) uses linear taint and does not perform helper propagation.
+- Deep mode (`--deep --depth N`) uses CFG/ICFG taint and performs bounded helper propagation within the same class to attribute sinks in helper methods to tainted inputs.
 
 ## Examples of findings (patterns)
 - Intent redirection: `getParcelableExtra("forward_intent") -> startActivity(forward)`
