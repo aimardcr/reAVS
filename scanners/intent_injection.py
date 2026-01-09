@@ -49,7 +49,7 @@ class IntentInjectionScanner(BaseScanner):
                 mutator_notes = _intent_mutator_notes(extracted.invokes, taint.reg_taint)
                 for inv in extracted.invokes:
                     if _is_intent_forward(inv, forward_patterns) and _has_tainted_arg(inv, taint, {TaintTag.INTENT}):
-                        finding = _finding_intent_forward(comp, m, inv)
+                        finding = _finding_intent_forward(comp, m, inv, extracted.invokes, forward_patterns)
                         findings.append(finding)
                         _log_match(ctx, finding, m)
                     if _is_set_result(inv, set_result_patterns) and _has_tainted_arg(inv, taint, {TaintTag.INTENT}):
@@ -275,8 +275,8 @@ def _helper_sink_findings(
     for c_inv in callee_invokes:
         if _is_file_write(c_inv, file_write_patterns):
             findings.append(_finding_arbitrary_write_helper(comp, caller, callee, inv, c_inv))
-        if _is_intent_forward(c_inv, forward_patterns):
-            findings.append(_finding_intent_forward_helper(comp, caller, callee, inv, c_inv))
+            if _is_intent_forward(c_inv, forward_patterns):
+                findings.append(_finding_intent_forward_helper(comp, caller, callee, inv, c_inv, callee_invokes, forward_patterns))
         if _is_set_result(c_inv, set_result_patterns):
             findings.append(_finding_set_result_helper(comp, caller, callee, inv, c_inv))
         if _is_webview_load(c_inv, webview_patterns):
@@ -285,8 +285,8 @@ def _helper_sink_findings(
     return findings
 
 
-def _finding_intent_forward(comp, method, inv: InvokeRef) -> Finding:
-    snippet = find_snippet(method, [inv.target_name])
+def _finding_intent_forward(comp, method, inv: InvokeRef, invokes: List[InvokeRef], forward_patterns: List[str]) -> Finding:
+    snippet = _sink_notes_from_invokes(invokes, forward_patterns) or find_snippet(method, [inv.target_name])
     return Finding(
         id="INTENT_REDIRECTION",
         title="Intent redirection/forwarding",
@@ -417,8 +417,8 @@ def _finding_arbitrary_write_helper(comp, caller, callee, inv: InvokeRef, sink: 
     )
 
 
-def _finding_intent_forward_helper(comp, caller, callee, inv: InvokeRef, sink: InvokeRef) -> Finding:
-    sink_snippet = find_snippet(callee, [sink.target_name]) or sink.raw
+def _finding_intent_forward_helper(comp, caller, callee, inv: InvokeRef, sink: InvokeRef, callee_invokes: List[InvokeRef], forward_patterns: List[str]) -> Finding:
+    sink_snippet = _sink_notes_from_invokes(callee_invokes, forward_patterns) or find_snippet(callee, [sink.target_name]) or sink.raw
     return Finding(
         id="INTENT_REDIRECTION",
         title="Intent redirection/forwarding",
@@ -502,6 +502,21 @@ def _method_name(method) -> str:
 
 def _invoke_signature(inv: InvokeRef) -> str:
     return f"{inv.target_class}->{inv.target_name}{inv.target_desc}"
+
+
+def _sink_notes_from_invokes(invokes: List[InvokeRef], patterns: List[str]) -> str | None:
+    notes = []
+    seen = set()
+    for inv in invokes:
+        if not match_invocation(inv, patterns):
+            continue
+        if inv.raw in seen:
+            continue
+        seen.add(inv.raw)
+        notes.append(inv.raw)
+    if not notes:
+        return None
+    return "; ".join(notes)
 
 
 def _log_match(ctx: ScanContext, finding: Finding, method) -> None:
