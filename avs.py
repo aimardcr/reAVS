@@ -26,6 +26,7 @@ from scanners.intent_injection import IntentInjectionScanner
 from scanners.content_provider import ContentProviderScanner
 from scanners.code_execution import CodeExecutionScanner
 from scanners.cryptography import CryptographyScanner
+from scanners.sql_injection import SQLInjectionScanner
 from scanners.deeplinks import DeepLinksScanner
 from scanners.webview import WebViewScanner
 
@@ -204,6 +205,7 @@ def main(argv: List[str]) -> int:
         ContentProviderScanner(),
         CodeExecutionScanner(),
         CryptographyScanner(),
+        SQLInjectionScanner(),
         DeepLinksScanner(),
         WebViewScanner(),
     ]

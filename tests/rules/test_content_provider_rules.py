@@ -2,6 +2,7 @@
 
 from core.ir import Component
 from scanners.content_provider import ContentProviderScanner
+from scanners.sql_injection import SQLInjectionScanner
 from tests.helpers.fakes import (
     FakeMethod,
     ins_invoke,
@@ -31,13 +32,13 @@ def test_sql_injection_positive_negative(make_ctx):
         ),
     ]
     method = FakeMethod("Lcom/test/Provider;", "query", "(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;", instructions)
-    findings = _run(ContentProviderScanner(), make_ctx, [comp], [method])
+    findings = _run(SQLInjectionScanner(), make_ctx, [comp], [method])
     assert any(f.id == "SQL_INJECTION" for f in findings)
 
     negative = FakeMethod("Lcom/test/Provider;", "query", "()V", [
         ins_invoke("invoke-virtual", ["v0", "v1"], "Landroid/database/sqlite/SQLiteDatabase;", "rawQuery", "(Ljava/lang/String;[Ljava/lang/String;)Landroid/database/Cursor;"),
     ])
-    findings = _run(ContentProviderScanner(), make_ctx, [comp], [negative])
+    findings = _run(SQLInjectionScanner(), make_ctx, [comp], [negative])
     assert not any(f.id == "SQL_INJECTION" for f in findings)
 
 
@@ -64,7 +65,7 @@ def test_sql_builder_injection_edge(make_ctx):
         instructions,
         registers_size=6,
     )
-    findings = _run(ContentProviderScanner(), make_ctx, [comp], [method])
+    findings = _run(SQLInjectionScanner(), make_ctx, [comp], [method])
     finding = next(f for f in findings if f.id == "SQL_INJECTION")
     kinds = {e.kind for e in finding.evidence}
     assert "PROPAGATION" in kinds and "SINK" in kinds
