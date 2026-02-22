@@ -5,8 +5,8 @@ from typing import Optional, List
 
 from core.dataflow.taint_provider import BaseTaintProvider
 
-from core.ir import Component
-from core.logging import Logger
+from core.models import Component
+from core.log import Logger
 
 
 @dataclass

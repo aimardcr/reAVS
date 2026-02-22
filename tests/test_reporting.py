@@ -1,12 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from core.ir import Component, Finding, EvidenceStep, Severity, Confidence
+from core.models import Component, Finding, EvidenceStep, Severity, Confidence
 from core.reporting import json_report
-from core.dataflow.rules_catalog import load_rules
+from core.rules.catalog import load_rules
 
 
 def test_json_report_matches_golden():
@@ -69,7 +69,7 @@ def test_json_report_matches_golden():
         ),
     ]
 
-    policy = load_rules({"policy": "rules/policy.yml"}).get("policy")
+    policy = load_rules().get("policy")
     report = json_report.build_json_report("test", "fast", components, findings, policy=policy)
 
     golden_path = Path("tests/reporting/golden/report.json")

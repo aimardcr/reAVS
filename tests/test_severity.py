@@ -1,14 +1,14 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import pytest
 
-from core.ir import Finding, EvidenceStep, Severity, Confidence
+from core.models import Finding, EvidenceStep, Severity, Confidence
 from core.reporting.json_report import resolve_severity
-from core.dataflow.rules_catalog import load_rules
+from core.rules.catalog import load_rules
 
 
 def test_resolve_severity_requires_sink_for_critical():
-    policy = load_rules({"policy": "rules/policy.yml"}).get("policy")
+    policy = load_rules().get("policy")
     finding = Finding(
         id="DYNAMIC_CODE_LOADING",
         title="Dynamic code loading",
@@ -26,7 +26,7 @@ def test_resolve_severity_requires_sink_for_critical():
 
 
 def test_resolve_severity_downgrades_for_non_exported():
-    policy = load_rules({"policy": "rules/policy.yml"}).get("policy")
+    policy = load_rules().get("policy")
     finding = Finding(
         id="INTENT_REDIRECTION",
         title="Intent redirection",

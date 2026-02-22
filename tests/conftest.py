@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -9,9 +9,9 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.context import ScanConfig, ScanContext
-from core.dataflow.rules_catalog import load_rules
-from core.logging import Logger
+from core.config import ScanConfig, ScanContext
+from core.rules.catalog import load_rules
+from core.log import Logger
 from core.dataflow.taint_provider import LinearTaintProvider, CfgTaintProvider
 from tests.helpers.fakes import FakeAPK, FakeAnalysis
 
@@ -38,12 +38,7 @@ def make_ctx():
         )
         ruleset = rules
         if ruleset is None:
-            ruleset = load_rules({
-                "sources": "rules/sources.yml",
-                "sinks": "rules/sinks.yml",
-                "sanitizers": "rules/sanitizers.yml",
-                "policy": "rules/policy.yml",
-            })
+            ruleset = load_rules()
         taint_provider = CfgTaintProvider(analysis, ruleset) if scan_mode == "deep" or max_depth > 0 else LinearTaintProvider(ruleset)
         return ScanContext(
             apk_path="fake.apk",

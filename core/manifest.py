@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import List, Optional
 import xml.etree.ElementTree as ET
 
-from core.ir import Component
+from core.models import Component
 
 try:
     from androguard.core.bytecodes.axml import AXMLPrinter

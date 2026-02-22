@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-from core.dataflow.rules_catalog import load_rules
+from core.rules.catalog import load_rules
 from core.dataflow.taint_cfg import TaintEngine
-from core.dataflow.taint_linear import TaintTag
+from core.dataflow.tags import TaintTag
 from tests.helpers.fakes import FakeAnalysis, FakeInstruction, FakeMethod, ins_invoke, ins_move_result
 
 
 def _rules():
-    return load_rules({
-        "sources": "rules/sources.yml",
-        "sinks": "rules/sinks.yml",
-        "sanitizers": "rules/sanitizers.yml",
-        "policy": "rules/policy.yml",
-    })
+    return load_rules()
 
 
 def test_icfg_return_taint_propagates_to_caller():

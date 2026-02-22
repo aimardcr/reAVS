@@ -1,8 +1,8 @@
 ﻿from __future__ import annotations
 
-from core.ir import Component
-from scanners.content_provider import ContentProviderScanner
-from scanners.sql_injection import SQLInjectionScanner
+from core.models import Component
+from scanners.provider import ContentProviderScanner
+from scanners.sql import SQLInjectionScanner
 from tests.helpers.fakes import (
     FakeMethod,
     ins_invoke,

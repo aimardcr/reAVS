@@ -1,7 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from core.ir import Finding, EvidenceStep, Severity, Confidence
-import avs
+from core.models import Finding, EvidenceStep, Severity, Confidence
+from core.cli import dedup_findings, _sort_findings
 from core.reporting import json_report
 
 
@@ -48,12 +48,12 @@ def test_dedup_findings_merges_and_stable_order():
         references=[],
         fingerprint="CODE_EXECUTION|A|B",
     )
-    merged = avs._dedup_findings([base, stronger])
+    merged = dedup_findings([base, stronger])
     assert len(merged) == 1
     assert merged[0].severity.value == "CRITICAL"
     kinds = {e.kind for e in merged[0].evidence}
     assert "SINK" in kinds and "SOURCE" in kinds
 
-    order_one = [f.id for f in avs._sort_findings(merged)]
-    order_two = [f.id for f in avs._sort_findings(list(merged))]
+    order_one = [f.id for f in _sort_findings(merged)]
+    order_two = [f.id for f in _sort_findings(list(merged))]
     assert order_one == order_two

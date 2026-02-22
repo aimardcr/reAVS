@@ -1,7 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from core.ir import Finding, EvidenceStep, Severity, Confidence, Component
-import avs
+from core.models import Finding, EvidenceStep, Severity, Confidence, Component
+import core.cli as cli
 from tests.helpers.fakes import FakeAPK
 
 
@@ -47,21 +47,21 @@ def test_cli_default_output(monkeypatch, tmp_path, capsys):
     def fake_get_components(apk):
         return [Component(name="com.test.MainActivity", type="activity", exported=True, permission=None, intent_filters=[])]
 
-    def fake_load_rules(paths):
+    def fake_load_rules(paths=None):
         return {}
 
-    monkeypatch.setattr(avs, "load_apk", fake_load_apk)
-    monkeypatch.setattr(avs, "get_components", fake_get_components)
-    monkeypatch.setattr(avs, "load_rules", fake_load_rules)
-    monkeypatch.setattr(avs, "IntentInjectionScanner", lambda: DummyScanner(dummy_findings))
-    monkeypatch.setattr(avs, "ContentProviderScanner", lambda: DummyScanner([]))
-    monkeypatch.setattr(avs, "CodeExecutionScanner", lambda: DummyScanner([]))
-    monkeypatch.setattr(avs, "CryptographyScanner", lambda: DummyScanner([]))
-    monkeypatch.setattr(avs, "DeepLinksScanner", lambda: DummyScanner([]))
-    monkeypatch.setattr(avs, "WebViewScanner", lambda: DummyScanner([]))
+    monkeypatch.setattr(cli, "load_apk", fake_load_apk)
+    monkeypatch.setattr(cli, "get_components", fake_get_components)
+    monkeypatch.setattr(cli, "load_rules", fake_load_rules)
+    monkeypatch.setattr(cli, "IntentInjectionScanner", lambda: DummyScanner(dummy_findings))
+    monkeypatch.setattr(cli, "ContentProviderScanner", lambda: DummyScanner([]))
+    monkeypatch.setattr(cli, "CodeExecutionScanner", lambda: DummyScanner([]))
+    monkeypatch.setattr(cli, "CryptographyScanner", lambda: DummyScanner([]))
+    monkeypatch.setattr(cli, "DeepLinksScanner", lambda: DummyScanner([]))
+    monkeypatch.setattr(cli, "WebViewScanner", lambda: DummyScanner([]))
 
     out_path = tmp_path / "report.json"
-    assert avs.main(["fake.apk", "--out", str(out_path)]) == 0
+    assert cli.main(["fake.apk", "--out", str(out_path)]) == 0
     output = capsys.readouterr().out
     assert "components activities=1" in output
     assert "findings CRITICAL=1" in output
@@ -77,20 +77,20 @@ def test_cli_verbose_output_includes_debug(monkeypatch, capsys):
     def fake_get_components(apk):
         return [Component(name="com.test.MainActivity", type="activity", exported=True, permission=None, intent_filters=[])]
 
-    def fake_load_rules(paths):
+    def fake_load_rules(paths=None):
         return {}
 
-    monkeypatch.setattr(avs, "load_apk", fake_load_apk)
-    monkeypatch.setattr(avs, "get_components", fake_get_components)
-    monkeypatch.setattr(avs, "load_rules", fake_load_rules)
-    monkeypatch.setattr(avs, "IntentInjectionScanner", lambda: DummyScanner(dummy_findings))
-    monkeypatch.setattr(avs, "ContentProviderScanner", lambda: DummyScanner([]))
-    monkeypatch.setattr(avs, "CodeExecutionScanner", lambda: DummyScanner([]))
-    monkeypatch.setattr(avs, "CryptographyScanner", lambda: DummyScanner([]))
-    monkeypatch.setattr(avs, "DeepLinksScanner", lambda: DummyScanner([]))
-    monkeypatch.setattr(avs, "WebViewScanner", lambda: DummyScanner([]))
+    monkeypatch.setattr(cli, "load_apk", fake_load_apk)
+    monkeypatch.setattr(cli, "get_components", fake_get_components)
+    monkeypatch.setattr(cli, "load_rules", fake_load_rules)
+    monkeypatch.setattr(cli, "IntentInjectionScanner", lambda: DummyScanner(dummy_findings))
+    monkeypatch.setattr(cli, "ContentProviderScanner", lambda: DummyScanner([]))
+    monkeypatch.setattr(cli, "CodeExecutionScanner", lambda: DummyScanner([]))
+    monkeypatch.setattr(cli, "CryptographyScanner", lambda: DummyScanner([]))
+    monkeypatch.setattr(cli, "DeepLinksScanner", lambda: DummyScanner([]))
+    monkeypatch.setattr(cli, "WebViewScanner", lambda: DummyScanner([]))
 
-    avs.main(["fake.apk", "--verbose"])
+    cli.main(["fake.apk", "--verbose"])
     output = capsys.readouterr().out
     assert "[DBG]" in output
     assert "Findings" in output or "SEV" in output

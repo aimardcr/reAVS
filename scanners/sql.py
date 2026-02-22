@@ -1,17 +1,67 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
-from core.context import ScanContext
-from core.ir import EvidenceStep, Finding, Severity, Confidence, Component
-from core.bc_extract import extract_method, InvokeRef
-from core.dataflow.taint_linear import TaintTag
-from core.dataflow.taint_provider import MethodTaintView
+from core.config import ScanContext
+from core.models import EvidenceStep, Finding, Severity, Confidence, Component
+from core.bytecode.extract import extract_method, InvokeRef
+from core.dataflow.tags import TaintTag
 from core.dataflow.dex_queries import all_methods
-from core.util.smali_like import find_snippet
-from core.util.rules import match_invocation, rule_index, rule_list
-from core.util.strings import normalize_component_name
-from scanners.base import BaseScanner
+from core.bytecode.smali import find_snippet
+from core.rules.matching import match_invocation, rule_index, rule_list
+from core.util.strings import normalize_method_name
+from core.util.descriptors import parse_descriptor_params
+from scanners.base import (
+    BaseScanner,
+    component_lookup,
+    package_name,
+    component_for_method,
+    has_tainted_arg,
+    taint_view,
+    reachable_roots,
+    method_name,
+    invoke_signature,
+)
+
+_SQL_TAINT_TAGS: Set[TaintTag] = {
+    TaintTag.INTENT,
+    TaintTag.URI,
+    TaintTag.FILE_PATH,
+    TaintTag.URL,
+    TaintTag.SQL,
+    TaintTag.USER_INPUT,
+    TaintTag.OTHER,
+}
+
+_LIBRARY_PREFIXES = (
+    "Landroidx/",
+    "Landroid/",
+    "Lcom/google/android/",
+    "Lcom/google/firebase/",
+    "Lcom/google/ads/",
+    "Lcom/facebook/",
+    "Lcom/ironsource/",
+    "Lio/bidmachine/",
+    "Lcom/unity3d/",
+    "Lcom/applovin/",
+    "Lcom/chartboost/",
+    "Lcom/vungle/",
+    "Lcom/adcolony/",
+    "Lcom/amazon/device/ads/",
+    "Lcom/squareup/",
+    "Lokhttp3/",
+    "Lretrofit2/",
+    "Lkotlinx/",
+    "Lkotlin/",
+    "Ljava/",
+    "Ljavax/",
+    "Lorg/json/",
+    "Lorg/apache/",
+)
+
+
+def _is_library_class(class_name: str) -> bool:
+    return any(class_name.startswith(prefix) for prefix in _LIBRARY_PREFIXES)
 
 
 class SQLInjectionScanner(BaseScanner):
@@ -21,7 +71,7 @@ class SQLInjectionScanner(BaseScanner):
         findings: List[Finding] = []
         sink_index = rule_index(ctx.rules, "sinks")
         sql_patterns = rule_list(sink_index, "SQL_EXEC", "methods")
-        component_lookup = _component_lookup(ctx.components, _package_name(ctx))
+        comp_lookup = component_lookup(ctx.components, package_name(ctx))
 
         total = 0
         analyzed = 0
@@ -29,24 +79,29 @@ class SQLInjectionScanner(BaseScanner):
 
         for m in all_methods(ctx.analysis):
             total += 1
-            comp = _component_for_method(m, component_lookup)
+            comp = component_for_method(m, comp_lookup)
             if ctx.config.component_filter and comp and ctx.config.component_filter not in comp.name:
                 continue
             if not hasattr(m, "get_code") or m.get_code() is None:
                 skipped_external += 1
-                ctx.logger.debug(f"method skipped reason=no_code method={_method_name(m)}")
+                ctx.logger.debug(f"method skipped reason=no_code method={method_name(m)}")
                 continue
+
+            if _is_library_class(_class_name(m)):
+                continue
+
             analyzed += 1
             extracted = extract_method(m)
-            taint_view = _taint_view(ctx, m, extracted)
-            taint_by_offset = taint_view.reg_taint_by_offset
+            tv = taint_view(ctx, m, extracted)
+            taint_by_offset = tv.reg_taint_by_offset
+            roots = reachable_roots(ctx, m)
 
             for inv in extracted.invokes:
                 taint_at = taint_by_offset.get(inv.offset, {})
-                if _is_sql_sink(inv, sql_patterns) and _has_tainted_arg(inv, taint_at, {TaintTag.URI, TaintTag.INTENT}):
-                    finding = _finding_sql_injection(comp, m, inv)
+                if _is_sql_sink(inv, sql_patterns) and has_tainted_arg(inv, taint_at, _SQL_TAINT_TAGS):
+                    finding = _finding_sql_injection(comp, m, inv, roots)
                     findings.append(finding)
-                    ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
+                    ctx.logger.debug(f"finding emitted id={finding.id} method={method_name(m)}")
 
             query_param_vregs, param_name_map = _query_param_vregs(m)
             builder_findings = _detect_sql_builder_injection(
@@ -56,10 +111,12 @@ class SQLInjectionScanner(BaseScanner):
                 query_param_vregs,
                 param_name_map,
                 sql_patterns,
+                taint_by_offset,
+                roots,
             )
             for f in builder_findings:
                 findings.append(f)
-                ctx.logger.debug(f"finding emitted id={f.id} method={_method_name(m)}")
+                ctx.logger.debug(f"finding emitted id={f.id} method={method_name(m)}")
 
         ctx.metrics.setdefault("scanner_stats", {})[self.name] = {
             "total": total,
@@ -75,81 +132,42 @@ class SQLInjectionScanner(BaseScanner):
         return findings
 
 
-def _component_lookup(components: List[Component], package_name: Optional[str]) -> Dict[str, Component]:
-    lookup: Dict[str, Component] = {}
-    for comp in components:
-        normalized = normalize_component_name(comp.name)
-        if normalized:
-            lookup[normalized] = comp
-        if package_name:
-            alt = _normalize_with_package(comp.name, package_name)
-            normalized_alt = normalize_component_name(alt)
-            if normalized_alt:
-                lookup.setdefault(normalized_alt, comp)
-    return lookup
-
-
-def _package_name(ctx: ScanContext) -> Optional[str]:
-    try:
-        return ctx.apk.get_package()
-    except Exception:
-        return None
-
-
-def _normalize_with_package(name: str, package_name: str) -> str:
-    if name.startswith("."):
-        return f"{package_name}{name}"
-    if "." not in name:
-        return f"{package_name}.{name}"
-    return name
-
-
-def _component_for_method(method, lookup: Dict[str, Component]) -> Optional[Component]:
-    try:
-        cls = normalize_component_name(method.get_class_name())
-    except Exception:
-        cls = None
-    if not cls:
-        return None
-    return lookup.get(cls)
-
-
-def _has_tainted_arg(inv: InvokeRef, reg_taint, tags) -> bool:
-    for reg in inv.arg_regs:
-        if reg in reg_taint and reg_taint[reg] & tags:
-            return True
-    return False
-
-
-def _taint_view(ctx: ScanContext, method, extracted) -> MethodTaintView:
-    if ctx.taint_provider is None:
-        return MethodTaintView(reg_taint_by_offset={})
-    return ctx.taint_provider.taint_by_offset(method, extracted)
-
-
 def _is_sql_sink(inv: InvokeRef, patterns: List[str]) -> bool:
     return match_invocation(inv, patterns)
 
 
-def _finding_sql_injection(comp: Optional[Component], method, inv: InvokeRef) -> Finding:
+def _finding_sql_injection(comp: Optional[Component], method, inv: InvokeRef, roots: set) -> Finding:
     snippet = find_snippet(method, [inv.target_name])
     component_name = comp.name if comp else None
     owner = component_name or _class_name(method)
+    propagation = []
+    if roots:
+        propagation.append(
+            EvidenceStep(
+                kind="PROPAGATION",
+                description="Reached via callbacks",
+                method=method_name(method),
+                notes=", ".join(sorted(normalize_method_name(_sig_to_method_name(sig)) or _sig_to_method_name(sig) for sig in roots)),
+            )
+        )
+    evidence = [
+        EvidenceStep(kind="SOURCE", description="Untrusted input influences SQL arguments", method=method_name(method)),
+        *propagation,
+        EvidenceStep(kind="SINK", description="rawQuery/execSQL/query call", method=method_name(method), notes=snippet),
+    ]
+    confidence = Confidence.HIGH if roots else Confidence.MEDIUM
     return Finding(
         id="SQL_INJECTION",
         title="SQL injection",
         description="SQL queries are influenced by untrusted input without strong validation.",
         severity=Severity.HIGH,
-        confidence=Confidence.MEDIUM,
+        confidence=confidence,
         component_name=component_name,
-        entrypoint_method=_method_name(method),
-        evidence=[
-            EvidenceStep(kind="SOURCE", description="Untrusted input influences SQL arguments", method=_method_name(method)),
-            EvidenceStep(kind="SINK", description="rawQuery/execSQL/query call", method=_method_name(method), notes=snippet),
-        ],
+        entrypoint_method=method_name(method),
+        evidence=evidence,
         recommendation="Use parameterized queries and strict allowlists for selection clauses.",
         references=[],
-        fingerprint=f"SQL_INJECTION|{owner}|{_invoke_signature(inv)}",
+        fingerprint=f"SQL_INJECTION|{owner}|{invoke_signature(inv)}",
     )
 
 
@@ -160,6 +178,8 @@ def _detect_sql_builder_injection(
     query_param_vregs: set,
     param_name_map: dict,
     sql_patterns: List[str],
+    taint_by_offset: Dict[int, Dict[int, set]],
+    roots: set,
 ) -> List[Finding]:
     sb_regs = {ni.dest_reg for ni in extracted.new_instances if ni.class_desc == "Ljava/lang/StringBuilder;"}
     if not sb_regs:
@@ -168,26 +188,30 @@ def _detect_sql_builder_injection(
     sb_tainted = set()
     sb_prop_notes = []
     used_params = set()
-    tainted_sql_regs = set()  # toString results where builder was tainted
-    all_sql_regs = set()  # all toString results regardless of taint
+    tainted_sql_regs = set()
     to_string_notes = {}
     for inv in extracted.invokes:
         if inv.target_class == "Ljava/lang/StringBuilder;" and inv.target_name == "append":
             if len(inv.arg_regs) >= 2:
                 sb_reg = inv.arg_regs[0]
                 arg_reg = inv.arg_regs[1]
-                if sb_reg in sb_regs and (arg_reg in param_tainted or _is_query_param(arg_reg, query_param_vregs)):
+                taint_at = taint_by_offset.get(inv.offset, {})
+                has_real_taint = arg_reg in taint_at and bool(taint_at[arg_reg] & _SQL_TAINT_TAGS)
+                arg_tainted = arg_reg in param_tainted or _is_query_param(arg_reg, query_param_vregs) or has_real_taint
+                if sb_reg in sb_regs and arg_tainted:
                     sb_tainted.add(sb_reg)
                     sb_prop_notes.append(inv.raw)
                     used_params.add(_param_name(arg_reg, param_name_map))
         if inv.target_class == "Ljava/lang/StringBuilder;" and inv.target_name == "toString":
             if inv.arg_regs:
                 sb_reg = inv.arg_regs[0]
-                if inv.move_result_reg is not None:
-                    all_sql_regs.add(inv.move_result_reg)
-                    if sb_reg in sb_tainted:
-                        tainted_sql_regs.add(inv.move_result_reg)
+                if inv.move_result_reg is not None and sb_reg in sb_tainted:
+                    tainted_sql_regs.add(inv.move_result_reg)
                     to_string_notes[inv.move_result_reg] = inv.raw
+
+    if not tainted_sql_regs:
+        return []
+
     findings: List[Finding] = []
     component_name = comp.name if comp else None
     owner = component_name or _class_name(method)
@@ -198,45 +222,62 @@ def _detect_sql_builder_injection(
             sql_reg = inv.arg_regs[1] if len(inv.arg_regs) > 1 else None
             if sql_reg is None:
                 continue
-            if sql_reg not in tainted_sql_regs and sql_reg not in all_sql_regs:
+            taint_at = taint_by_offset.get(inv.offset, {})
+            arg_has_real_taint = any(
+                reg in taint_at and bool(taint_at[reg] & _SQL_TAINT_TAGS) for reg in inv.arg_regs
+            )
+            if sql_reg not in tainted_sql_regs and not arg_has_real_taint:
                 continue
 
             prop_notes = "; ".join(sb_prop_notes)
             if sql_reg in to_string_notes:
                 prop_notes = (prop_notes + "; " + to_string_notes[sql_reg]).strip("; ")
 
-            if sql_reg in tainted_sql_regs and used_params:
-                confidence = Confidence.HIGH
-                evidence = [
+            evidence: List[EvidenceStep] = []
+            tainted_path = (sql_reg in tainted_sql_regs and used_params) or arg_has_real_taint
+            if tainted_path:
+                evidence.append(
                     EvidenceStep(
                         kind="SOURCE",
-                        description="Selection/sortOrder parameter used in SQL construction",
-                        method=_method_name(method),
-                        notes=", ".join(sorted(p for p in used_params if p)),
-                    ),
-                    EvidenceStep(
-                        kind="PROPAGATION",
-                        description="StringBuilder.append/toString builds SQL",
-                        method=_method_name(method),
-                        notes=prop_notes or inv.raw,
-                    ),
-                ]
+                        description="Tainted input used in SQL construction",
+                        method=method_name(method),
+                        notes=", ".join(sorted(p for p in used_params if p)) or prop_notes or inv.raw,
+                    )
+                )
             else:
-                confidence = Confidence.LOW
-                evidence = [
+                evidence.append(
                     EvidenceStep(
                         kind="SOURCE",
                         description="Heuristic: SQL built via string concatenation",
-                        method=_method_name(method),
+                        method=method_name(method),
                         notes=prop_notes or inv.raw,
-                    ),
-                ]
+                    )
+                )
+            evidence.append(
+                EvidenceStep(
+                    kind="PROPAGATION",
+                    description="StringBuilder.append/toString builds SQL",
+                    method=method_name(method),
+                    notes=prop_notes or inv.raw,
+                )
+            )
+            if roots:
+                evidence.append(
+                    EvidenceStep(
+                        kind="PROPAGATION",
+                        description="Reached via callbacks",
+                        method=method_name(method),
+                        notes=", ".join(sorted(normalize_method_name(_sig_to_method_name(sig)) or _sig_to_method_name(sig) for sig in roots)),
+                    )
+                )
+
+            confidence = Confidence.HIGH if tainted_path or roots else Confidence.LOW
 
             evidence.append(
                 EvidenceStep(
                     kind="SINK",
                     description=f"SQLiteDatabase.{inv.target_name} called with built SQL",
-                    method=_method_name(method),
+                    method=method_name(method),
                     notes=inv.raw,
                 )
             )
@@ -248,11 +289,11 @@ def _detect_sql_builder_injection(
                     severity=Severity.HIGH,
                     confidence=confidence,
                     component_name=component_name,
-                    entrypoint_method=_method_name(method),
+                    entrypoint_method=method_name(method),
                     evidence=evidence,
                     recommendation="Use parameterized queries and strict allowlists for selection clauses.",
                     references=[],
-                    fingerprint=f"SQL_INJECTION|{owner}|{_invoke_signature(inv)}",
+                    fingerprint=f"SQL_INJECTION|{owner}|{invoke_signature(inv)}",
                 )
             )
     return findings
@@ -273,6 +314,11 @@ def _param_name(reg: int, param_name_map: dict) -> str:
     return f"p{idx}"
 
 
+def _sig_to_method_name(sig: tuple[str, str, str]) -> str:
+    cls, name, _ = sig
+    return f"{cls}->{name}"
+
+
 def _param_tainted_regs(moves: List, query_param_regs: set) -> set:
     param_tainted = set(query_param_regs)
     for mv in moves:
@@ -291,7 +337,7 @@ def _query_param_vregs(method) -> tuple[set, dict]:
     except Exception:
         return set(), {}
 
-    param_count, param_types = _parse_descriptor_params(desc)
+    param_count, param_types = parse_descriptor_params(desc)
     is_static = False
     try:
         is_static = bool(method.get_access_flags() & 0x0008)
@@ -313,49 +359,8 @@ def _query_param_vregs(method) -> tuple[set, dict]:
     return vregs, name_map
 
 
-def _parse_descriptor_params(desc: str) -> tuple[int, List[str]]:
-    params: List[str] = []
-    if not desc or "(" not in desc:
-        return 0, params
-    sig = desc.split("(", 1)[1].split(")", 1)[0]
-    i = 0
-    while i < len(sig):
-        ch = sig[i]
-        if ch == "[":
-            start = i
-            i += 1
-            while i < len(sig) and sig[i] == "[":
-                i += 1
-            if i < len(sig) and sig[i] == "L":
-                i = sig.find(";", i) + 1
-            else:
-                i += 1
-            params.append(sig[start:i])
-        elif ch == "L":
-            end = sig.find(";", i)
-            if end == -1:
-                break
-            params.append(sig[i : end + 1])
-            i = end + 1
-        else:
-            params.append(ch)
-            i += 1
-    return len(params), params
-
-
-def _invoke_signature(inv: InvokeRef) -> str:
-    return f"{inv.target_class}->{inv.target_name}{inv.target_desc}"
-
-
 def _class_name(method) -> str:
     try:
         return method.get_class_name()
-    except Exception:
-        return "<unknown>"
-
-
-def _method_name(method) -> str:
-    try:
-        return f"{method.get_class_name()}->{method.get_name()}"
     except Exception:
         return "<unknown>"

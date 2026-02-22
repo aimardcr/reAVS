@@ -1,13 +1,13 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from core.ir import Component
-import avs
-from scanners.intent_injection import IntentInjectionScanner
+from core.models import Component
+from core.cli import print_findings_table
+from scanners.intent import IntentInjectionScanner
 from tests.helpers.fakes import FakeMethod, ins_invoke, ins_move_result
 
 
 def test_zero_findings_print_table(capsys):
-    avs._print_findings_table([])
+    print_findings_table([])
     output = capsys.readouterr().out
     assert "Findings: none" in output
 

@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
-from core.ir import Component
-from scanners.cryptography import CryptographyScanner
+from core.models import Component
+from scanners.crypto import CryptographyScanner
 from tests.helpers.fakes import (
     FakeMethod,
     ins_invoke,

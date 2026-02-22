@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from typing import List, Dict, Optional, Tuple
 
-from core.ir import Component, Finding, Severity, EvidenceStep
+from core.models import Component, Finding, Severity, EvidenceStep
 from core.util.strings import normalize_component_name, normalize_method_name, fqcn_to_desc
 
 

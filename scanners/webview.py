@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from typing import List
 
-from core.context import ScanContext
-from core.ir import Finding
+from core.config import ScanContext
+from core.models import Finding
 from scanners.base import BaseScanner
 
 

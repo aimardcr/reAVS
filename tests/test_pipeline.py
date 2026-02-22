@@ -4,7 +4,7 @@ import pytest
 
 from core.loader import load_apk
 from core.manifest import parse_manifest_xml, get_components
-from core.ir import Component
+from core.models import Component
 from scanners.webview import WebViewScanner
 from tests.helpers.fakes import FakeAPK
 

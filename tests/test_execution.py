@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
-from core.ir import Component
-from scanners.code_execution import CodeExecutionScanner
+from core.models import Component
+from scanners.execution import CodeExecutionScanner
 from tests.helpers.fakes import (
     FakeMethod,
     ins_invoke,

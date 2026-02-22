@@ -2,15 +2,22 @@ from __future__ import annotations
 
 from typing import List, Dict, Set
 
-from core.context import ScanContext
-from core.ir import Finding, EvidenceStep, Severity, Confidence
-from core.bc_extract import extract_method, InvokeRef
-from core.dataflow.taint_linear import TaintTag
+from core.config import ScanContext
+from core.models import Finding, EvidenceStep, Severity, Confidence
+from core.bytecode.extract import extract_method, InvokeRef
+from core.dataflow.tags import TaintTag
 from core.dataflow.taint_provider import MethodTaintView
-from core.dataflow.dex_queries import methods_for_class, build_method_index
-from core.util.smali_like import find_snippet
-from core.util.rules import match_invocation, rule_index, rule_list
-from scanners.base import BaseScanner
+from core.dataflow.dex_queries import build_method_index
+from core.bytecode.smali import find_snippet
+from core.rules.matching import match_invocation, rule_index, rule_list
+from scanners.base import (
+    BaseScanner,
+    methods_for_component,
+    has_tainted_arg,
+    method_name,
+    invoke_signature,
+    taint_view,
+)
 
 
 class IntentInjectionScanner(BaseScanner):
@@ -36,36 +43,36 @@ class IntentInjectionScanner(BaseScanner):
             if comp.type not in ("activity", "service", "receiver"):
                 continue
             ctx.logger.debug(f"component start name={comp.name} type={comp.type}")
-            methods = _methods_for_component(ctx, comp.name)
+            methods = methods_for_component(ctx, comp.name)
             for m in methods:
                 total += 1
                 if not hasattr(m, "get_code") or m.get_code() is None:
                     skipped_external += 1
-                    ctx.logger.debug(f"method skipped reason=no_code method={_method_name(m)}")
+                    ctx.logger.debug(f"method skipped reason=no_code method={method_name(m)}")
                     continue
                 analyzed += 1
                 extracted = extract_method(m)
-                taint_view = _taint_view(ctx, m, extracted)
-                taint_by_offset = taint_view.reg_taint_by_offset
+                tv = taint_view(ctx, m, extracted)
+                taint_by_offset = tv.reg_taint_by_offset
 
                 mutator_notes = _intent_mutator_notes(extracted.invokes, taint_by_offset)
                 for inv in extracted.invokes:
                     taint_at = taint_by_offset.get(inv.offset, {})
-                    if _is_intent_forward(inv, forward_patterns) and _has_tainted_arg(inv, taint_at, {TaintTag.INTENT}):
+                    if _is_intent_forward(inv, forward_patterns) and has_tainted_arg(inv, taint_at, {TaintTag.INTENT}):
                         finding = _finding_intent_forward(comp, m, inv, extracted.invokes, forward_patterns)
                         findings.append(finding)
                         _log_match(ctx, finding, m)
-                    if _is_set_result(inv, set_result_patterns) and _has_tainted_arg(inv, taint_at, {TaintTag.INTENT}):
+                    if _is_set_result(inv, set_result_patterns) and has_tainted_arg(inv, taint_at, {TaintTag.INTENT}):
                         if not _has_tainted_result_intent(inv, taint_at, mutator_notes):
                             continue
                         finding = _finding_set_result(comp, m, inv, mutator_notes)
                         findings.append(finding)
                         _log_match(ctx, finding, m)
-                    if _is_file_write(inv, file_write_patterns) and _has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI}):
+                    if _is_file_write(inv, file_write_patterns) and has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI}):
                         finding = _finding_arbitrary_write(comp, m, inv)
                         findings.append(finding)
                         _log_match(ctx, finding, m)
-                    if _is_webview_load(inv, webview_patterns) and _has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI, TaintTag.URL}):
+                    if _is_webview_load(inv, webview_patterns) and has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI, TaintTag.URL}):
                         js_enabled = _has_js_enabled(extracted.invokes)
                         finding = _finding_webview_url(comp, m, inv, js_enabled)
                         findings.append(finding)
@@ -82,7 +89,7 @@ class IntentInjectionScanner(BaseScanner):
                         comp,
                         m,
                         extracted.invokes,
-                        taint_view,
+                        tv,
                         method_index,
                         max_depth=ctx.config.max_depth,
                         forward_patterns=forward_patterns,
@@ -109,33 +116,12 @@ class IntentInjectionScanner(BaseScanner):
         return findings
 
 
-def _methods_for_component(ctx: ScanContext, comp_name: str):
-    class_name = _normalize_class_name(ctx, comp_name)
-    return methods_for_class(ctx.analysis, class_name)
-
-
-def _normalize_class_name(ctx: ScanContext, name: str) -> str:
-    pkg = ctx.apk.get_package()
-    if name.startswith("."):
-        return f"{pkg}{name}".replace(".", "/")
-    if "." not in name and pkg:
-        return f"{pkg}.{name}".replace(".", "/")
-    return name.replace(".", "/")
-
-
 def _get_target_sdk(ctx: ScanContext) -> int:
     try:
         t = ctx.apk.get_target_sdk_version()
         return int(t) if t is not None else 0
     except Exception:
         return 0
-
-
-def _has_tainted_arg(inv: InvokeRef, reg_taint: Dict[int, Set[TaintTag]], tags: Set[TaintTag]) -> bool:
-    for reg in inv.arg_regs:
-        if reg in reg_taint and reg_taint[reg] & tags:
-            return True
-    return False
 
 
 def _is_intent_forward(inv: InvokeRef, patterns: List[str]) -> bool:
@@ -179,8 +165,8 @@ def _pending_intent_issue(invokes: List[InvokeRef], method, target_sdk: int, pat
             severity=Severity.HIGH,
             confidence=Confidence.MEDIUM,
             component_name=None,
-            entrypoint_method=_method_name(method),
-            evidence=[EvidenceStep(kind="SINK", description="PendingIntent created with FLAG_MUTABLE", method=_method_name(method))],
+            entrypoint_method=method_name(method),
+            evidence=[EvidenceStep(kind="SINK", description="PendingIntent created with FLAG_MUTABLE", method=method_name(method))],
             recommendation="Use FLAG_IMMUTABLE unless mutation is required, and validate all inputs.",
             references=["https://developer.android.com/reference/android/app/PendingIntent"],
         )
@@ -192,8 +178,8 @@ def _pending_intent_issue(invokes: List[InvokeRef], method, target_sdk: int, pat
             severity=Severity.MEDIUM,
             confidence=Confidence.LOW,
             component_name=None,
-            entrypoint_method=_method_name(method),
-            evidence=[EvidenceStep(kind="SINK", description="PendingIntent without FLAG_IMMUTABLE", method=_method_name(method))],
+            entrypoint_method=method_name(method),
+            evidence=[EvidenceStep(kind="SINK", description="PendingIntent without FLAG_IMMUTABLE", method=method_name(method))],
             recommendation="Specify FLAG_IMMUTABLE for PendingIntent where mutation is not required.",
             references=["https://developer.android.com/about/versions/12/behavior-changes-12#pending-intent-mutability"],
         )
@@ -205,7 +191,7 @@ def _helper_propagation_findings(
     comp,
     caller,
     invokes: List[InvokeRef],
-    taint_view: MethodTaintView,
+    caller_taint: MethodTaintView,
     method_index: dict,
     max_depth: int,
     forward_patterns: List[str],
@@ -229,8 +215,8 @@ def _helper_propagation_findings(
                 continue
             if not inv.opcode.startswith("invoke-direct") and not inv.opcode.startswith("invoke-static"):
                 continue
-            taint_at = taint_view.taint_at(inv.offset)
-            if not _has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI, TaintTag.URL}):
+            taint_at = caller_taint.taint_at(inv.offset)
+            if not has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI, TaintTag.URL}):
                 continue
             key = (inv.target_class, inv.target_name, inv.target_desc)
             if key in visited:
@@ -291,10 +277,10 @@ def _finding_intent_forward(comp, method, inv: InvokeRef, invokes: List[InvokeRe
         severity=Severity.HIGH,
         confidence=Confidence.HIGH,
         component_name=comp.name,
-        entrypoint_method=_method_name(method),
+        entrypoint_method=method_name(method),
         evidence=[
-            EvidenceStep(kind="SOURCE", description="Intent read from incoming extras", method=_method_name(method)),
-            EvidenceStep(kind="SINK", description="Forwarded to startActivity/startService/sendBroadcast", method=_method_name(method), notes=snippet),
+            EvidenceStep(kind="SOURCE", description="Intent read from incoming extras", method=method_name(method)),
+            EvidenceStep(kind="SINK", description="Forwarded to startActivity/startService/sendBroadcast", method=method_name(method), notes=snippet),
         ],
         recommendation="Validate or sanitize incoming Intents before forwarding.",
         references=[],
@@ -305,14 +291,14 @@ def _finding_set_result(comp, method, inv: InvokeRef, mutator_notes: dict) -> Fi
     snippet = find_snippet(method, [inv.target_name])
     prop = _mutator_summary(inv, mutator_notes)
     evidence = [
-        EvidenceStep(kind="SOURCE", description="Extras read from incoming Intent", method=_method_name(method)),
+        EvidenceStep(kind="SOURCE", description="Extras read from incoming Intent", method=method_name(method)),
     ]
     if prop:
         evidence.append(
             EvidenceStep(
                 kind="PROPAGATION",
                 description="Result Intent mutated with tainted values",
-                method=_method_name(method),
+                method=method_name(method),
                 notes=prop,
             )
         )
@@ -320,7 +306,7 @@ def _finding_set_result(comp, method, inv: InvokeRef, mutator_notes: dict) -> Fi
         EvidenceStep(
             kind="SINK",
             description="setResult called with tainted Intent",
-            method=_method_name(method),
+            method=method_name(method),
             notes=snippet,
         )
     )
@@ -331,7 +317,7 @@ def _finding_set_result(comp, method, inv: InvokeRef, mutator_notes: dict) -> Fi
         severity=Severity.HIGH,
         confidence=Confidence.HIGH,
         component_name=comp.name,
-        entrypoint_method=_method_name(method),
+        entrypoint_method=method_name(method),
         evidence=evidence,
         recommendation="Only set result fields from trusted inputs or enforce allowlists.",
         references=[],
@@ -348,14 +334,14 @@ def _finding_arbitrary_write(comp, method, inv: InvokeRef) -> Finding:
         severity=Severity.HIGH,
         confidence=Confidence.HIGH,
         component_name=comp.name,
-        entrypoint_method=_method_name(method),
+        entrypoint_method=method_name(method),
         evidence=[
-            EvidenceStep(kind="SOURCE", description="File path from Intent extras", method=_method_name(method)),
-            EvidenceStep(kind="SINK", description="File output stream opened with tainted path", method=_method_name(method), notes=snippet),
+            EvidenceStep(kind="SOURCE", description="File path from Intent extras", method=method_name(method)),
+            EvidenceStep(kind="SINK", description="File output stream opened with tainted path", method=method_name(method), notes=snippet),
         ],
         recommendation="Constrain file paths to an allowed directory and normalize before use.",
         references=[],
-        fingerprint=f"ARBITRARY_FILE_WRITE|{comp.name}|{_invoke_signature(inv)}",
+        fingerprint=f"ARBITRARY_FILE_WRITE|{comp.name}|{invoke_signature(inv)}",
     )
 
 
@@ -365,8 +351,8 @@ def _finding_webview_url(comp, method, inv: InvokeRef, js_enabled: bool) -> Find
         desc += " JavaScript appears enabled, increasing impact."
     snippet = find_snippet(method, ["WebView;->loadUrl", "loadUrl"]) or inv.raw
     evidence = [
-        EvidenceStep(kind="SOURCE", description="URL read from Intent extras", method=_method_name(method)),
-        EvidenceStep(kind="SINK", description="WebView.loadUrl called with tainted URL", method=_method_name(method), notes=snippet),
+        EvidenceStep(kind="SOURCE", description="URL read from Intent extras", method=method_name(method)),
+        EvidenceStep(kind="SINK", description="WebView.loadUrl called with tainted URL", method=method_name(method), notes=snippet),
     ]
     if js_enabled:
         js_snippet = find_snippet(method, ["setJavaScriptEnabled"])
@@ -374,7 +360,7 @@ def _finding_webview_url(comp, method, inv: InvokeRef, js_enabled: bool) -> Find
             EvidenceStep(
                 kind="NOTE",
                 description="WebView JavaScript enabled",
-                method=_method_name(method),
+                method=method_name(method),
                 notes=js_snippet,
             )
         )
@@ -385,11 +371,11 @@ def _finding_webview_url(comp, method, inv: InvokeRef, js_enabled: bool) -> Find
         severity=Severity.HIGH,
         confidence=Confidence.HIGH,
         component_name=comp.name,
-        entrypoint_method=_method_name(method),
+        entrypoint_method=method_name(method),
         evidence=evidence,
         recommendation="Allowlist trusted domains or strip untrusted URL parameters before loading.",
         references=[],
-        fingerprint=f"WEBVIEW_TAINTED_URL|{comp.name}|{_invoke_signature(inv)}",
+        fingerprint=f"WEBVIEW_TAINTED_URL|{comp.name}|{invoke_signature(inv)}",
     )
 
 
@@ -402,15 +388,15 @@ def _finding_arbitrary_write_helper(comp, caller, callee, inv: InvokeRef, sink: 
         severity=Severity.HIGH,
         confidence=Confidence.HIGH,
         component_name=comp.name,
-        entrypoint_method=_method_name(caller),
+        entrypoint_method=method_name(caller),
         evidence=[
-            EvidenceStep(kind="SOURCE", description="File path from Intent extras", method=_method_name(caller)),
-            EvidenceStep(kind="PROPAGATION", description="Intent data passed to helper", method=_method_name(caller), notes=inv.raw),
-            EvidenceStep(kind="SINK", description="File output stream opened in helper", method=_method_name(callee), notes=sink_snippet),
+            EvidenceStep(kind="SOURCE", description="File path from Intent extras", method=method_name(caller)),
+            EvidenceStep(kind="PROPAGATION", description="Intent data passed to helper", method=method_name(caller), notes=inv.raw),
+            EvidenceStep(kind="SINK", description="File output stream opened in helper", method=method_name(callee), notes=sink_snippet),
         ],
         recommendation="Constrain file paths to an allowed directory and normalize before use.",
         references=[],
-        fingerprint=f"ARBITRARY_FILE_WRITE|{comp.name}|{_invoke_signature(sink)}",
+        fingerprint=f"ARBITRARY_FILE_WRITE|{comp.name}|{invoke_signature(sink)}",
     )
 
 
@@ -423,11 +409,11 @@ def _finding_intent_forward_helper(comp, caller, callee, inv: InvokeRef, sink: I
         severity=Severity.HIGH,
         confidence=Confidence.MEDIUM,
         component_name=comp.name,
-        entrypoint_method=_method_name(caller),
+        entrypoint_method=method_name(caller),
         evidence=[
-            EvidenceStep(kind="SOURCE", description="Intent read from incoming extras", method=_method_name(caller)),
-            EvidenceStep(kind="PROPAGATION", description="Intent passed to helper", method=_method_name(caller), notes=inv.raw),
-            EvidenceStep(kind="SINK", description="Forwarded to startActivity/startService/sendBroadcast", method=_method_name(callee), notes=sink_snippet),
+            EvidenceStep(kind="SOURCE", description="Intent read from incoming extras", method=method_name(caller)),
+            EvidenceStep(kind="PROPAGATION", description="Intent passed to helper", method=method_name(caller), notes=inv.raw),
+            EvidenceStep(kind="SINK", description="Forwarded to startActivity/startService/sendBroadcast", method=method_name(callee), notes=sink_snippet),
         ],
         recommendation="Validate or sanitize incoming Intents before forwarding.",
         references=[],
@@ -443,11 +429,11 @@ def _finding_set_result_helper(comp, caller, callee, inv: InvokeRef, sink: Invok
         severity=Severity.HIGH,
         confidence=Confidence.MEDIUM,
         component_name=comp.name,
-        entrypoint_method=_method_name(caller),
+        entrypoint_method=method_name(caller),
         evidence=[
-            EvidenceStep(kind="SOURCE", description="Extras read from incoming Intent", method=_method_name(caller)),
-            EvidenceStep(kind="PROPAGATION", description="Result intent built in helper", method=_method_name(caller), notes=inv.raw),
-            EvidenceStep(kind="SINK", description="setResult called with tainted Intent", method=_method_name(callee), notes=sink_snippet),
+            EvidenceStep(kind="SOURCE", description="Extras read from incoming Intent", method=method_name(caller)),
+            EvidenceStep(kind="PROPAGATION", description="Result intent built in helper", method=method_name(caller), notes=inv.raw),
+            EvidenceStep(kind="SINK", description="setResult called with tainted Intent", method=method_name(callee), notes=sink_snippet),
         ],
         recommendation="Only set result fields from trusted inputs or enforce allowlists.",
         references=[],
@@ -461,9 +447,9 @@ def _finding_webview_url_helper(comp, caller, callee, inv: InvokeRef, sink: Invo
         desc += " JavaScript appears enabled, increasing impact."
     sink_snippet = find_snippet(callee, ["WebView;->loadUrl", "loadUrl"]) or sink.raw
     evidence = [
-        EvidenceStep(kind="SOURCE", description="URL read from Intent extras", method=_method_name(caller)),
-        EvidenceStep(kind="PROPAGATION", description="URL passed to helper", method=_method_name(caller), notes=inv.raw),
-        EvidenceStep(kind="SINK", description="WebView.loadUrl called with tainted URL", method=_method_name(callee), notes=sink_snippet),
+        EvidenceStep(kind="SOURCE", description="URL read from Intent extras", method=method_name(caller)),
+        EvidenceStep(kind="PROPAGATION", description="URL passed to helper", method=method_name(caller), notes=inv.raw),
+        EvidenceStep(kind="SINK", description="WebView.loadUrl called with tainted URL", method=method_name(callee), notes=sink_snippet),
     ]
     if js_enabled:
         js_snippet = find_snippet(callee, ["setJavaScriptEnabled"])
@@ -471,7 +457,7 @@ def _finding_webview_url_helper(comp, caller, callee, inv: InvokeRef, sink: Invo
             EvidenceStep(
                 kind="NOTE",
                 description="WebView JavaScript enabled",
-                method=_method_name(callee),
+                method=method_name(callee),
                 notes=js_snippet,
             )
         )
@@ -482,23 +468,12 @@ def _finding_webview_url_helper(comp, caller, callee, inv: InvokeRef, sink: Invo
         severity=Severity.HIGH,
         confidence=Confidence.MEDIUM,
         component_name=comp.name,
-        entrypoint_method=_method_name(caller),
+        entrypoint_method=method_name(caller),
         evidence=evidence,
         recommendation="Allowlist trusted domains or strip untrusted URL parameters before loading.",
         references=[],
-        fingerprint=f"WEBVIEW_TAINTED_URL|{comp.name}|{_invoke_signature(sink)}",
+        fingerprint=f"WEBVIEW_TAINTED_URL|{comp.name}|{invoke_signature(sink)}",
     )
-
-
-def _method_name(method) -> str:
-    try:
-        return f"{method.get_class_name()}->{method.get_name()}"
-    except Exception:
-        return "<unknown>"
-
-
-def _invoke_signature(inv: InvokeRef) -> str:
-    return f"{inv.target_class}->{inv.target_name}{inv.target_desc}"
 
 
 def _sink_notes_from_invokes(invokes: List[InvokeRef], patterns: List[str]) -> str | None:
@@ -517,15 +492,7 @@ def _sink_notes_from_invokes(invokes: List[InvokeRef], patterns: List[str]) -> s
 
 
 def _log_match(ctx: ScanContext, finding: Finding, method) -> None:
-    ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(method)}")
-
-
-def _taint_view(ctx: ScanContext, method, extracted) -> MethodTaintView:
-    if ctx.taint_provider is None:
-        return MethodTaintView(reg_taint_by_offset={})
-    return ctx.taint_provider.taint_by_offset(method, extracted)
-
-
+    ctx.logger.debug(f"finding emitted id={finding.id} method={method_name(method)}")
 
 
 def _intent_mutator_notes(invokes: List[InvokeRef], taint_by_offset: Dict[int, Dict[int, Set[TaintTag]]]) -> Dict[int, List[str]]:

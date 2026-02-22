@@ -2,15 +2,14 @@ from __future__ import annotations
 
 from typing import List
 
-from core.context import ScanContext
-from core.ir import Finding, EvidenceStep, Severity, Confidence
-from core.bc_extract import extract_method, InvokeRef
-from core.dataflow.taint_linear import TaintTag
-from core.dataflow.taint_provider import MethodTaintView
-from core.dataflow.dex_queries import methods_for_class, build_method_index
-from core.util.smali_like import find_snippet
-from core.util.rules import match_invocation, rule_index, rule_list
-from scanners.base import BaseScanner
+from core.config import ScanContext
+from core.models import Finding, EvidenceStep, Severity, Confidence
+from core.bytecode.extract import extract_method, InvokeRef
+from core.dataflow.tags import TaintTag
+from core.dataflow.dex_queries import build_method_index
+from core.bytecode.smali import find_snippet
+from core.rules.matching import match_invocation, rule_index, rule_list
+from scanners.base import BaseScanner, methods_for_component, has_tainted_arg, method_name, taint_view
 
 
 class CodeExecutionScanner(BaseScanner):
@@ -31,43 +30,43 @@ class CodeExecutionScanner(BaseScanner):
             if ctx.config.component_filter and ctx.config.component_filter not in comp.name:
                 continue
             ctx.logger.debug(f"component start name={comp.name} type={comp.type}")
-            methods = _methods_for_component(ctx, comp.name)
+            methods = methods_for_component(ctx, comp.name)
             for m in methods:
                 total += 1
                 if not hasattr(m, "get_code") or m.get_code() is None:
                     skipped_external += 1
-                    ctx.logger.debug(f"method skipped reason=no_code method={_method_name(m)}")
+                    ctx.logger.debug(f"method skipped reason=no_code method={method_name(m)}")
                     continue
                 analyzed += 1
                 extracted = extract_method(m)
-                taint_view = _taint_view(ctx, m, extracted)
-                taint_by_offset = taint_view.reg_taint_by_offset
+                tv = taint_view(ctx, m, extracted)
+                taint_by_offset = tv.reg_taint_by_offset
 
                 for inv in extracted.invokes:
                     taint_at = taint_by_offset.get(inv.offset, {})
                     if match_invocation(inv, dex_patterns):
-                        tainted = _has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI})
+                        tainted = has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI})
                         sev, conf = _normalize_exec_scoring(tainted)
                         finding = _finding_dex_loader(comp, m, inv, sev, conf, tainted)
                         findings.append(finding)
-                        ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
+                        ctx.logger.debug(f"finding emitted id={finding.id} method={method_name(m)}")
                     if match_invocation(inv, exec_patterns):
-                        tainted = _has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI})
+                        tainted = has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI})
                         sev, conf = _normalize_exec_scoring(tainted)
                         finding = _finding_runtime_exec(comp, m, inv, sev, conf, tainted)
                         findings.append(finding)
-                        ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
+                        ctx.logger.debug(f"finding emitted id={finding.id} method={method_name(m)}")
                     if match_invocation(inv, reflection_patterns):
-                        tainted = _has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI})
+                        tainted = has_tainted_arg(inv, taint_at, {TaintTag.INTENT, TaintTag.URI})
                         sev, conf = _normalize_exec_scoring(tainted)
                         finding = _finding_reflection(comp, m, inv, sev, conf, tainted)
                         findings.append(finding)
-                        ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
+                        ctx.logger.debug(f"finding emitted id={finding.id} method={method_name(m)}")
 
                 if _has_js_bridge(extracted.invokes, js_bridge_patterns) or _helper_has_js_bridge(ctx, m, method_index, js_bridge_patterns):
                     finding = _finding_js_bridge(comp, m)
                     findings.append(finding)
-                    ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
+                    ctx.logger.debug(f"finding emitted id={finding.id} method={method_name(m)}")
             ctx.logger.debug(f"component end name={comp.name} type={comp.type}")
 
         ctx.metrics.setdefault("scanner_stats", {})[self.name] = {
@@ -82,27 +81,6 @@ class CodeExecutionScanner(BaseScanner):
             f"skipped_no_code={skipped_external} findings={len(findings)}"
         )
         return findings
-
-
-def _methods_for_component(ctx: ScanContext, comp_name: str):
-    class_name = _normalize_class_name(ctx, comp_name)
-    return methods_for_class(ctx.analysis, class_name)
-
-
-def _normalize_class_name(ctx: ScanContext, name: str) -> str:
-    pkg = ctx.apk.get_package()
-    if name.startswith("."):
-        return f"{pkg}{name}".replace(".", "/")
-    if "." not in name and pkg:
-        return f"{pkg}.{name}".replace(".", "/")
-    return name.replace(".", "/")
-
-
-def _has_tainted_arg(inv: InvokeRef, reg_taint, tags) -> bool:
-    for reg in inv.arg_regs:
-        if reg in reg_taint and reg_taint[reg] & tags:
-            return True
-    return False
 
 
 def _has_js_bridge(invokes: List[InvokeRef], patterns: List[str]) -> bool:
@@ -124,13 +102,13 @@ def _finding_dex_loader(
     evidence = []
     if tainted:
         evidence.append(
-            EvidenceStep(kind="SOURCE", description="Path read from incoming Intent", method=_method_name(method))
+            EvidenceStep(kind="SOURCE", description="Path read from incoming Intent", method=method_name(method))
         )
         evidence.append(
             EvidenceStep(
                 kind="PROPAGATION",
                 description="Tainted path passed to class loader",
-                method=_method_name(method),
+                method=method_name(method),
                 notes=inv.raw,
             )
         )
@@ -138,7 +116,7 @@ def _finding_dex_loader(
         EvidenceStep(
             kind="SINK",
             description="DexClassLoader/PathClassLoader invoked",
-            method=_method_name(method),
+            method=method_name(method),
             notes=snippet,
         )
     )
@@ -149,7 +127,7 @@ def _finding_dex_loader(
         severity=severity,
         confidence=confidence,
         component_name=comp.name,
-        entrypoint_method=_method_name(method),
+        entrypoint_method=method_name(method),
         evidence=evidence,
         recommendation="Avoid dynamic loading from external paths; restrict to internal, verified code.",
         references=[],
@@ -170,8 +148,8 @@ def _finding_runtime_exec(
         severity=severity,
         confidence=confidence,
         component_name=comp.name,
-        entrypoint_method=_method_name(method),
-        evidence=[EvidenceStep(kind="SINK", description="Runtime.exec/ProcessBuilder call", method=_method_name(method), notes=snippet)],
+        entrypoint_method=method_name(method),
+        evidence=[EvidenceStep(kind="SINK", description="Runtime.exec/ProcessBuilder call", method=method_name(method), notes=snippet)],
         recommendation="Avoid executing shell commands or strictly validate and allowlist inputs.",
         references=[],
     )
@@ -191,10 +169,10 @@ def _finding_reflection(
         severity=severity,
         confidence=confidence,
         component_name=comp.name,
-        entrypoint_method=_method_name(method),
+        entrypoint_method=method_name(method),
         evidence=[
-            EvidenceStep(kind="SOURCE", description="Untrusted input read", method=_method_name(method)),
-            EvidenceStep(kind="SINK", description="Reflective call invoked", method=_method_name(method), notes=snippet),
+            EvidenceStep(kind="SOURCE", description="Untrusted input read", method=method_name(method)),
+            EvidenceStep(kind="SINK", description="Reflective call invoked", method=method_name(method), notes=snippet),
         ],
         recommendation="Use fixed class/method names and avoid reflection on untrusted values.",
         references=[],
@@ -210,18 +188,11 @@ def _finding_js_bridge(comp, method) -> Finding:
         severity=Severity.HIGH,
         confidence=Confidence.MEDIUM,
         component_name=comp.name,
-        entrypoint_method=_method_name(method),
-        evidence=[EvidenceStep(kind="SINK", description="addJavascriptInterface used", method=_method_name(method), notes=snippet)],
+        entrypoint_method=method_name(method),
+        evidence=[EvidenceStep(kind="SINK", description="addJavascriptInterface used", method=method_name(method), notes=snippet)],
         recommendation="Avoid JavaScript bridges or strictly scope interfaces and load only trusted content.",
         references=[],
     )
-
-
-def _method_name(method) -> str:
-    try:
-        return f"{method.get_class_name()}->{method.get_name()}"
-    except Exception:
-        return "<unknown>"
 
 
 def _helper_has_js_bridge(ctx: ScanContext, method, method_index: dict, patterns: List[str]) -> bool:
@@ -260,9 +231,3 @@ def _normalize_exec_scoring(tainted: bool) -> tuple[Severity, Confidence]:
     if tainted:
         return Severity.CRITICAL, Confidence.HIGH
     return Severity.HIGH, Confidence.MEDIUM
-
-
-def _taint_view(ctx: ScanContext, method, extracted) -> MethodTaintView:
-    if ctx.taint_provider is None:
-        return MethodTaintView(reg_taint_by_offset={})
-    return ctx.taint_provider.taint_by_offset(method, extracted)

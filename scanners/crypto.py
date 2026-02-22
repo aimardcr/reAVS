@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from typing import List, Dict
 
-from core.context import ScanContext
-from core.ir import Finding, EvidenceStep, Severity, Confidence
-from core.bc_extract import extract_method, InvokeRef
+from core.config import ScanContext
+from core.models import Finding, EvidenceStep, Severity, Confidence
+from core.bytecode.extract import extract_method, InvokeRef
 from core.util.strings import is_base64ish, is_hexish
-from core.util.smali_like import find_snippet
+from core.bytecode.smali import find_snippet
 from core.dataflow.dex_queries import all_methods
-from scanners.base import BaseScanner
+from scanners.base import BaseScanner, method_name
 
 
 class CryptographyScanner(BaseScanner):
@@ -30,7 +30,7 @@ class CryptographyScanner(BaseScanner):
             total += 1
             if not hasattr(m, "get_code") or m.get_code() is None:
                 skipped_external += 1
-                ctx.logger.debug(f"method skipped reason=no_code method={_method_name(m)}")
+                ctx.logger.debug(f"method skipped reason=no_code method={method_name(m)}")
                 continue
             analyzed += 1
             extracted = extract_method(m)
@@ -55,7 +55,7 @@ class CryptographyScanner(BaseScanner):
                 if key_info["confirmed"]:
                     finding = _finding_hardcoded_key(m, key_info["key"], True)
                     findings.append(finding)
-                    ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
+                    ctx.logger.debug(f"finding emitted id={finding.id} method={method_name(m)}")
                 else:
                     if not class_crypto_usage.get(class_name, False):
                         continue
@@ -67,24 +67,24 @@ class CryptographyScanner(BaseScanner):
                             EvidenceStep(
                                 kind="NOTE",
                                 description="Also observed in",
-                                notes=_method_name(m),
+                                notes=method_name(m),
                             )
                         )
 
             if _has_ecb_mode(extracted.const_strings):
                 finding = _finding_ecb(m)
                 findings.append(finding)
-                ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
+                ctx.logger.debug(f"finding emitted id={finding.id} method={method_name(m)}")
 
             if _has_weak_digest(extracted, "MD5"):
                 finding = _finding_weak_digest(m, "MD5")
                 findings.append(finding)
-                ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
+                ctx.logger.debug(f"finding emitted id={finding.id} method={method_name(m)}")
 
             if _has_weak_digest(extracted, "SHA-1"):
                 finding = _finding_weak_digest(m, "SHA-1")
                 findings.append(finding)
-                ctx.logger.debug(f"finding emitted id={finding.id} method={_method_name(m)}")
+                ctx.logger.debug(f"finding emitted id={finding.id} method={method_name(m)}")
 
         if heuristic_finding is not None:
             findings.append(heuristic_finding)
@@ -173,15 +173,15 @@ def _finding_hardcoded_key(method, key_constant: str | None, confirmed: bool) ->
         confidence = Confidence.MEDIUM
         description = "Hardcoded key material is used in SecretKeySpec."
         evidence = [
-            EvidenceStep(kind="SOURCE", description="Hardcoded key material constant", method=_method_name(method)),
-            EvidenceStep(kind="SINK", description="SecretKeySpec constructed", method=_method_name(method), notes=snippet),
+            EvidenceStep(kind="SOURCE", description="Hardcoded key material constant", method=method_name(method)),
+            EvidenceStep(kind="SINK", description="SecretKeySpec constructed", method=method_name(method), notes=snippet),
         ]
     else:
         severity = Severity.INFO
         confidence = Confidence.LOW
         description = "Heuristic: possible hardcoded key material near crypto API usage."
         evidence = [
-            EvidenceStep(kind="SOURCE", description="Possible key material constant", method=_method_name(method)),
+            EvidenceStep(kind="SOURCE", description="Possible key material constant", method=method_name(method)),
         ]
     return Finding(
         id="HARDCODED_SECRET",
@@ -190,7 +190,7 @@ def _finding_hardcoded_key(method, key_constant: str | None, confirmed: bool) ->
         severity=severity,
         confidence=confidence,
         component_name=None,
-        entrypoint_method=_method_name(method),
+        entrypoint_method=method_name(method),
         evidence=evidence,
         recommendation="Load keys from secure storage and avoid hardcoded secrets.",
         references=[],
@@ -263,8 +263,8 @@ def _finding_ecb(method) -> Finding:
         severity=Severity.HIGH,
         confidence=Confidence.HIGH,
         component_name=None,
-        entrypoint_method=_method_name(method),
-        evidence=[EvidenceStep(kind="SINK", description="Cipher.getInstance with /ECB/", method=_method_name(method), notes=snippet)],
+        entrypoint_method=method_name(method),
+        evidence=[EvidenceStep(kind="SINK", description="Cipher.getInstance with /ECB/", method=method_name(method), notes=snippet)],
         recommendation="Use authenticated encryption modes like AES/GCM.",
         references=[],
     )
@@ -279,8 +279,8 @@ def _finding_weak_digest(method, algo: str) -> Finding:
         severity=Severity.MEDIUM,
         confidence=Confidence.HIGH,
         component_name=None,
-        entrypoint_method=_method_name(method),
-        evidence=[EvidenceStep(kind="SINK", description=f"MessageDigest.getInstance({algo})", method=_method_name(method), notes=snippet)],
+        entrypoint_method=method_name(method),
+        evidence=[EvidenceStep(kind="SINK", description=f"MessageDigest.getInstance({algo})", method=method_name(method), notes=snippet)],
         recommendation="Use SHA-256 or stronger hash functions.",
         references=[],
     )
@@ -293,11 +293,6 @@ def _class_name(method) -> str:
         return "<unknown>"
 
 
-def _method_name(method) -> str:
-    try:
-        return f"{method.get_class_name()}->{method.get_name()}"
-    except Exception:
-        return "<unknown>"
 
 
 def _extract_iv_fields_from_clinit(class_name: str, method, extracted) -> Dict[tuple, str | None]:
@@ -389,13 +384,13 @@ def _detect_hardcoded_iv_in_extracted(class_name: str, method, extracted, iv_fie
             EvidenceStep(
                 kind="SOURCE",
                 description="IV loaded from static constant or literal",
-                method=_method_name(method),
+                method=method_name(method),
                 notes=source_notes,
             ),
             EvidenceStep(
                 kind="SINK",
                 description="IvParameterSpec constructed from static IV",
-                method=_method_name(method),
+                method=method_name(method),
                 notes=iv_spec_note,
             ),
         ]
@@ -407,7 +402,7 @@ def _detect_hardcoded_iv_in_extracted(class_name: str, method, extracted, iv_fie
                 severity=Severity.HIGH,
                 confidence=Confidence.HIGH,
                 component_name=class_name,
-                entrypoint_method=_method_name(method),
+                entrypoint_method=method_name(method),
                 evidence=evidence,
                 recommendation="Use random IVs per encryption operation and store alongside ciphertext.",
                 references=[],

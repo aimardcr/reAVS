@@ -1,8 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-from core.bc_extract import extract_method, build_one_hop_call_edges
-from core.dataflow.taint_linear import analyze_method_local_taint, TaintTag
-from core.dataflow.rules_catalog import load_rules
+from core.bytecode.extract import extract_method, build_one_hop_call_edges
+from core.dataflow.tags import TaintTag
+from core.dataflow.taint_linear import analyze_method_local_taint
+from core.rules.catalog import load_rules
 from core.dataflow.dex_queries import build_method_index
 from tests.helpers.fakes import (
     FakeMethod,
@@ -76,7 +77,7 @@ def test_local_taint_sources_and_propagation():
     source = make_source(["getIntent", "getStringExtra", "Uri.parse", "getPath"])
     method = FakeMethod("Lcom/test/Main;", "onCreate", "()V", instructions, source=source)
     extracted = extract_method(method)
-    rules = load_rules({"sources": "rules/sources.yml"})
+    rules = load_rules()
     taint = analyze_method_local_taint(method, extracted, rules)
 
     assert TaintTag.INTENT in taint.reg_taint.get(0, set())

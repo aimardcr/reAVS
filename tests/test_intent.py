@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 
-from core.ir import Component
-from scanners.intent_injection import IntentInjectionScanner
+from core.models import Component
+from scanners.intent import IntentInjectionScanner
 from tests.helpers.fakes import (
     FakeMethod,
     FakeAPK,
