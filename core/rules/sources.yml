@@ -44,3 +44,8 @@ sources:
     category: provider
     methods: ["ContentProvider;->query", "ContentProvider;->openFile", "ContentProvider;->openAssetFile"]
     description: Provider entrypoints where parameters/Uri are attacker-influenced
+
+  - id: UI_TEXT
+    category: user_input
+    methods: ["EditText;->getText", "TextView;->getText"]
+    description: UI text input (user-controlled)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import List, Tuple
+import re
+from typing import List, Optional, Tuple
 
 
 def get_const_strings(method) -> List[str]:
@@ -60,17 +61,36 @@ def get_invoke_refs(method) -> List[Tuple[str, str, str, str]]:
     return refs
 
 
-def _parse_invoke_output(output: str) -> Tuple[str, str, str]:
-    if "->" not in output:
-        return "", "", ""
-    left, right = output.split("->", 1)
-    cls = left.strip()
+_INVOKE_SIG_RE = re.compile(r"(L[^;]+;)->([^\(]+)(\(.*)$")
+
+
+def parse_invoke_sig(raw: str) -> Optional[Tuple[str, str, str]]:
+    """Extract ``(class, method_name, descriptor)`` from an invoke raw output.
+
+    Returns ``None`` when the string cannot be parsed.
+    """
+    if "->" not in raw:
+        return None
+    m = _INVOKE_SIG_RE.search(raw)
+    if m:
+        return m.group(1).strip(), m.group(2).strip(), m.group(3).strip()
+    left, right = raw.split("->", 1)
+    cls = left.split(",")[-1].strip()
+    if " " in cls:
+        cls = cls.split()[-1].strip()
     if "(" in right:
         name, desc = right.split("(", 1)
         desc = "(" + desc
     else:
         name, desc = right, ""
     return cls.strip(), name.strip(), desc.strip()
+
+
+def _parse_invoke_output(output: str) -> Tuple[str, str, str]:
+    result = parse_invoke_sig(output)
+    if result is None:
+        return "", "", ""
+    return result
 
 
 def find_snippet(method, keywords: List[str]) -> str | None:

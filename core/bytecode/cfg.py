@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 import re
 
+from core.bytecode.smali import parse_invoke_sig as _shared_parse_invoke_sig
+
 
 @dataclass
 class IRInstruction:
@@ -651,17 +653,4 @@ def _parse_regs(text: str) -> List[int]:
 
 
 def _parse_invoke_sig(raw: str) -> Optional[Tuple[str, str, str]]:
-    if "->" not in raw:
-        return None
-    match = re.search(r"(L[^;]+;)->([^\(]+)(\(.*)$", raw)
-    if match:
-        cls, name, desc = match.group(1), match.group(2), match.group(3)
-        return cls.strip(), name.strip(), desc.strip()
-    left, right = raw.split("->", 1)
-    cls = left.split(",")[-1].strip()
-    if "(" in right:
-        name, desc = right.split("(", 1)
-        desc = "(" + desc
-    else:
-        name, desc = right, ""
-    return cls.strip(), name.strip(), desc.strip()
+    return _shared_parse_invoke_sig(raw)
